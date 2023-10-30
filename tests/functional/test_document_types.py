@@ -126,7 +126,7 @@ class TestDocumentTypeIO(BaseAWSCommandParamsTest):
 
     def assert_raises_shorthand_syntax_error(self, cmdline,
                                              stderr_contains=None):
-        _, stderr, _ = self.run_cmd(cmdline, expected_rc=255)
+        _, stderr, _ = self.run_cmd(cmdline, expected_rc=252)
         if stderr_contains:
             self.assertIn(stderr_contains, stderr)
 

@@ -10,6 +10,7 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import locale
 import os
 import signal
 
@@ -19,9 +20,11 @@ from botocore.compat import six
 
 from awscli.compat import ensure_text_type
 from awscli.compat import compat_shell_quote
+from awscli.compat import compat_open
 from awscli.compat import get_popen_kwargs_for_pager_cmd
+from awscli.compat import getpreferredencoding
 from awscli.compat import ignore_user_entered_signals
-from awscli.testutils import mock, unittest, skip_if_windows
+from awscli.testutils import mock, unittest, skip_if_windows, FileCreator
 
 
 class TestEnsureText(unittest.TestCase):
@@ -152,3 +155,50 @@ class TestIgnoreUserSignals(unittest.TestCase):
         with ignore_user_entered_signals():
             self.assertEqual(signal.getsignal(signal.SIGTSTP), signal.SIG_IGN)
             os.kill(os.getpid(), signal.SIGTSTP)
+
+
+class TestGetPreferredEncoding(unittest.TestCase):
+
+    @mock.patch.dict(os.environ, {'AWS_CLI_FILE_ENCODING': 'cp1252'})
+    def test_getpreferredencoding_with_env_var(self):
+        encoding = getpreferredencoding()
+        self.assertEqual(encoding, 'cp1252')
+
+    @mock.patch('locale.setlocale', side_effect=['POSIX', 'C'])
+    def test_getpreferredencoding_wo_env_var_with_ctype_posix(self, *args):
+        encoding = getpreferredencoding()
+        self.assertEqual(encoding, 'UTF-8')
+        encoding = getpreferredencoding()
+        self.assertEqual(encoding, 'UTF-8')
+
+    @mock.patch('locale.setlocale', return_value='English_United States.1252')
+    @mock.patch('locale.getpreferredencoding')
+    def test_runs_locale_getpreferredencoding_wo_env_var_and_posix(
+            self, getprefedencoding, *args):
+        getpreferredencoding()
+        getprefedencoding.assert_called_once_with()
+
+
+class TestCompatOpenWithAccessPermissions(unittest.TestCase):
+    def setUp(self):
+        self.files = FileCreator()
+
+    def tearDown(self):
+        self.files.remove_all()
+
+    @skip_if_windows('Permissions tests only supported on mac/linux')
+    def test_can_create_file_with_acess_permissions(self):
+        file_path = os.path.join(self.files.rootdir, "foo_600.txt")
+        with compat_open(file_path, access_permissions=0o600, mode='w') as f:
+            f.write('bar')
+        self.assertEqual(os.stat(file_path).st_mode & 0o777, 0o600)
+
+    def test_not_override_existing_file_access_permissions(self):
+        file_path = os.path.join(self.files.rootdir, "foo.txt")
+        with open(file_path, mode='w') as f:
+            f.write('bar')
+        expected_st_mode = os.stat(file_path).st_mode
+
+        with compat_open(file_path, access_permissions=0o600, mode='w') as f:
+            f.write('bar')
+        self.assertEqual(os.stat(file_path).st_mode, expected_st_mode)

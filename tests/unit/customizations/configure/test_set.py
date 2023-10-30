@@ -10,10 +10,11 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import mock
 import os
 
 from awscli.customizations.configure.set import ConfigureSetCommand
-from awscli.testutils import mock, unittest
+from awscli.testutils import unittest
 from . import FakeSession
 
 
@@ -36,9 +37,9 @@ class TestConfigureSetCommand(unittest.TestCase):
     def test_configure_set_command_dotted(self):
         set_command = ConfigureSetCommand(
             self.session, self.config_writer)
-        set_command(args=['preview.emr', 'true'], parsed_globals=None)
+        set_command(args=['plugins.foo', 'true'], parsed_globals=None)
         self.config_writer.update_config.assert_called_with(
-            {'__section__': 'preview', 'emr': 'true'}, 'myconfigfile')
+            {'__section__': 'plugins', 'foo': 'true'}, 'myconfigfile')
 
     def test_configure_set_command_dotted_with_default_profile(self):
         self.session.variables['profile'] = 'default'

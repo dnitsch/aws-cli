@@ -14,7 +14,10 @@
 from argparse import Namespace
 from awscli.customizations.codedeploy.register import Register
 from awscli.customizations.codedeploy.utils import MAX_TAGS_PER_INSTANCE
-from awscli.testutils import mock, unittest
+from awscli.customizations.exceptions import ConfigurationError
+from awscli.customizations.exceptions import ParamValidationError
+from awscli.testutils import unittest
+from mock import MagicMock, patch, call, mock_open
 
 
 class TestRegister(unittest.TestCase):
@@ -50,15 +53,15 @@ class TestRegister(unittest.TestCase):
         self.globals.endpoint_url = self.endpoint_url
         self.globals.verify_ssl = False
 
-        self.open_patcher = mock.patch(
+        self.open_patcher = patch(
             'awscli.customizations.codedeploy.register.open',
-            mock.mock_open(), create=True
+            mock_open(), create=True
         )
         self.open = self.open_patcher.start()
 
-        self.codedeploy = mock.MagicMock()
+        self.codedeploy = MagicMock()
 
-        self.iam = mock.MagicMock()
+        self.iam = MagicMock()
         self.iam.create_user.return_value = {
             'User': {'Arn': self.iam_user_arn}
         }
@@ -69,7 +72,7 @@ class TestRegister(unittest.TestCase):
             }
         }
 
-        self.session = mock.MagicMock()
+        self.session = MagicMock()
         self.session.create_client.side_effect = [self.codedeploy, self.iam]
         self.register = Register(self.session)
 
@@ -79,13 +82,14 @@ class TestRegister(unittest.TestCase):
     def test_register_throws_on_invalid_region(self):
         self.globals.region = None
         self.session.get_config_variable.return_value = None
-        with self.assertRaisesRegex(RuntimeError, 'Region not specified.'):
+        error_msg = 'Region not specified.'
+        with self.assertRaisesRegex(ConfigurationError, error_msg):
             self.register._run_main(self.args, self.globals)
 
     def test_register_throws_on_invalid_instance_name(self):
         self.args.instance_name = 'invalid%@^&%#&'
-        with self.assertRaisesRegex(
-                ValueError, 'Instance name contains invalid characters.'):
+        error_msg = 'Instance name contains invalid characters.'
+        with self.assertRaisesRegex(ParamValidationError, error_msg):
             self.register._run_main(self.args, self.globals)
 
     def test_register_throws_on_invalid_tags(self):
@@ -93,26 +97,27 @@ class TestRegister(unittest.TestCase):
             {'Key': 'k' + str(x), 'Value': 'v' + str(x)} for x in range(11)
         ]
         with self.assertRaisesRegex(
-                ValueError,
+                ParamValidationError,
                 'Instances can only have a maximum of {0} tags.'.format(
                     MAX_TAGS_PER_INSTANCE)):
             self.register._run_main(self.args, self.globals)
 
     def test_register_throws_on_invalid_iam_user_arn(self):
         self.args.iam_user_arn = 'invalid%@^&%#&'
-        with self.assertRaisesRegex(ValueError, 'Invalid IAM user ARN.'):
+        error_msg = 'Invalid IAM user ARN.'
+        with self.assertRaisesRegex(ParamValidationError, error_msg):
             self.register._run_main(self.args, self.globals)
 
     def test_register_creates_clients(self):
         self.register._run_main(self.args, self.globals)
         self.session.create_client.assert_has_calls([
-            mock.call(
+            call(
                 'codedeploy',
                 region_name=self.region,
                 endpoint_url=self.endpoint_url,
                 verify=self.globals.verify_ssl
             ),
-            mock.call('iam', region_name=self.region)
+            call('iam', region_name=self.region)
         ])
 
     def test_register_with_no_iam_user_arn(self):

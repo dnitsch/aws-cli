@@ -122,7 +122,7 @@ def _aws(command_string, max_attempts=1, delay=5, target_rc=0):
     env = None
     if service in REGION_OVERRIDES:
         env = os.environ.copy()
-        env['AWS_DEFAULT_REGION'] = REGION_OVERRIDES[service]
+        env['AWS_REGION'] = REGION_OVERRIDES[service]
 
     for _ in range(max_attempts - 1):
         result = aws(command_string, env_vars=env)
@@ -132,32 +132,22 @@ def _aws(command_string, max_attempts=1, delay=5, target_rc=0):
     return aws(command_string, env_vars=env)
 
 
-@pytest.mark.parametrize(
-    "cmd",
-    COMMANDS
-)
+@pytest.mark.parametrize('cmd', COMMANDS)
 def test_can_make_success_request(cmd):
     result = _aws(cmd, max_attempts=5, delay=5, target_rc=0)
     assert result.rc == 0
     assert result.stderr == ''
 
 
-ERROR_MESSAGE_RE = re.compile(
-    r'An error occurred \(.+\) when calling the \w+ operation: \w+'
-)
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    ERROR_COMMANDS
-)
+@pytest.mark.parametrize('cmd', ERROR_COMMANDS)
 def test_display_error_message(cmd):
     identifier = 'foo-awscli-test-%s' % random.randint(1000, 100000)
-    command_string = cmd % identifier
-    result = _aws(command_string, target_rc=255)
-    assert result.rc == 255
-
-    match = ERROR_MESSAGE_RE.search(result.stderr)
-    assert match is not None, (
-        f'Error message was not displayed for command "{command_string}": {result.stderr}'
+    cmd = cmd % identifier
+    result = _aws(cmd, target_rc=254)
+    assert result.rc == 254
+    error_message = re.compile(
+        r'An error occurred \(.+\) when calling the \w+ operation: \w+')
+    match = error_message.search(result.stderr)
+    assert match, (
+        f'Error message was not displayed for command "{cmd}": {result.stderr}'
     )

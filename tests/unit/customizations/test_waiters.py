@@ -10,13 +10,14 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import mock
+
 from botocore.waiter import WaiterModel
 from botocore.exceptions import DataNotFoundError
 
-from awscli.testutils import (
-    mock, unittest,
-    BaseAWSHelpOutputTest,BaseAWSCommandParamsTest
-)
+from awscli.testutils import unittest, BaseAWSHelpOutputTest, \
+    BaseAWSCommandParamsTest
+from awscli.customizations.exceptions import ParamValidationError
 from awscli.customizations.waiters import add_waiters, WaitCommand, \
     get_waiter_model_from_service_model, WaiterStateCommand, WaiterCaller, \
     WaiterStateDocBuilder, WaiterStateCommandBuilder
@@ -84,7 +85,7 @@ class TestServicetoWaiterModel(unittest.TestCase):
         service_model.service_name = 'service'
         service_model.api_version = '2014-01-01'
         get_waiter_model_from_service_model(session, service_model)
-        session.get_waiter_model.assert_called_with('service', '2014-01-01')
+        session.get_waiter_model.assert_called_with('service')
 
     def test_can_handle_data_errors(self):
         service_model = mock.Mock()
@@ -121,7 +122,7 @@ class TestWaitCommand(unittest.TestCase):
     def test_run_main_error(self):
         self.parsed_args = mock.Mock()
         self.parsed_args.subcommand = None
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ParamValidationError):
             self.cmd._run_main(self.parsed_args, None)
 
 

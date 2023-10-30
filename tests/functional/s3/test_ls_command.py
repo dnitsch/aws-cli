@@ -36,7 +36,7 @@ class TestLSCommand(BaseS3TransferCommandTest):
             stdout, '%s        100 foo/bar.txt\n'%time_local.strftime('%Y-%m-%d %H:%M:%S'))
 
     def test_errors_out_with_extra_arguments(self):
-        stderr = self.run_cmd('s3 ls --extra-argument-foo', expected_rc=255)[1]
+        stderr = self.run_cmd('s3 ls --extra-argument-foo', expected_rc=252)[1]
         self.assertIn('Unknown options', stderr)
         self.assertIn('--extra-argument-foo', stderr)
 
@@ -106,7 +106,7 @@ class TestLSCommand(BaseS3TransferCommandTest):
         self.run_cmd('s3 ls s3://bucket/foo', expected_rc=0)
 
     def test_success_rc_empty_bucket_no_key_given(self):
-        # If no key has been provided and the bucket is empty, it should
+        # If no key has been provdided and the bucket is empty, it should
         # still return an rc of 0 since the user is not looking for an actual
         # object.
         self.parsed_responses = [{}]

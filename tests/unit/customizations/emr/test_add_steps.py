@@ -10,11 +10,11 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+
 import os
 import copy
+import mock
 
-
-from awscli.testutils import mock
 from tests.unit.customizations.emr import EMRBaseAWSCommandParamsTest as \
     BaseAWSCommandParamsTest
 
@@ -208,11 +208,11 @@ class TestAddSteps(BaseAWSCommandParamsTest):
 
     def test_custom_jar_step_with_all_fields(self):
         cmd = self.prefix + (
-            'Name=Custom,Type=Custom_jar,'
-            'Jar=s3://mybucket/mytest.jar,'
-            'Args=arg1,arg2,MainClass=mymainclass,'
-            'ActionOnFailure=TERMINATE_CLUSTER,'
-            'Properties=k1=v1\,k2=v2\,k3')
+            r'Name=Custom,Type=Custom_jar,'
+            r'Jar=s3://mybucket/mytest.jar,'
+            r'Args=arg1,arg2,MainClass=mymainclass,'
+            r'ActionOnFailure=TERMINATE_CLUSTER,'
+            r'Properties=k1=v1\,k2=v2\,k3')
         expected_result = {
             'JobFlowId': 'j-ABC',
             'Steps': [
@@ -650,11 +650,11 @@ class TestAddSteps(BaseAWSCommandParamsTest):
             expected_result_release):
         if expected_error_msg:
             grl_patch.return_value = None
-            result = self.run_cmd(cmd, 255)
+            result = self.run_cmd(cmd, 252)
             self.assertEqual(expected_error_msg, result[1])
         if expected_result_release:
             grl_patch.return_value = 'emr-4.0'
-            result = self.run_cmd(cmd, 255)
+            result = self.run_cmd(cmd, 252)
             self.assertEqual(expected_result_release, result[1])
 
 if __name__ == "__main__":

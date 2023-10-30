@@ -23,6 +23,7 @@ from awscli.customizations.dlm.constants \
     POLICY_ARN_PATTERN, \
     RESOURCE_TYPE_SNAPSHOT, \
     RESOURCE_TYPE_IMAGE
+from awscli.customizations.exceptions import ConfigurationError
 
 LOG = logging.getLogger(__name__)
 
@@ -135,9 +136,10 @@ class CreateDefaultRole(BasicCommand):
         region = get_region(self._session, parsed_globals)
 
         if region is None:
-            raise ValueError('You must specify a region. '
-                             'You can also configure your region '
-                             'by running "aws configure".')
+            raise ConfigurationError(
+                'You must specify a region. You can also configure your '
+                'region by running "aws configure".'
+            )
 
         managed_policy_arn = get_policy_arn(
             region,

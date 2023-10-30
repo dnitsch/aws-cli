@@ -10,22 +10,24 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-
-import os
 import logging
+import os
 
 from botocore.compat import OrderedDict
 
+from awscli.compat import is_windows
 from awscli.customizations.commands import BasicCommand
-from awscli.customizations.utils import uni_print
 from awscli.customizations.eks.exceptions import EKSClusterError
-from awscli.customizations.eks.kubeconfig import (Kubeconfig,
-                                                  KubeconfigError,
-                                                  KubeconfigLoader,
-                                                  KubeconfigWriter,
-                                                  KubeconfigValidator,
-                                                  KubeconfigAppender)
+from awscli.customizations.eks.kubeconfig import (
+    Kubeconfig,
+    KubeconfigError,
+    KubeconfigLoader,
+    KubeconfigWriter,
+    KubeconfigValidator,
+    KubeconfigAppender
+)
 from awscli.customizations.eks.ordered_yaml import ordered_yaml_dump
+from awscli.customizations.utils import uni_print
 
 LOG = logging.getLogger(__name__)
 
@@ -160,7 +162,7 @@ class UpdateKubeconfigCommand(BasicCommand):
                     new_user_dict,
                     new_cluster_dict
                 ])
-
+        return 0
 
 
 class KubeconfigSelector(object):

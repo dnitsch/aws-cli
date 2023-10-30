@@ -16,8 +16,7 @@ from tests.unit.customizations.emr import EMRBaseAWSCommandParamsTest as \
 from tests.unit.customizations.emr import test_constants as \
     CONSTANTS
 import json
-from awscli.testutils import mock
-
+from mock import patch
 
 INSTANCE_GROUPS_WITH_AUTOSCALING_POLICY = (
     ' InstanceGroupType=TASK,InstanceType=d2.xlarge,InstanceCount=2,'
@@ -229,20 +228,20 @@ class TestAddInstanceGroups(BaseAWSCommandParamsTest):
     def test_instance_groups_missing_instance_group_type_error(self):
         cmd = self.prefix + ' Name=Task,InstanceType=m1.small,' +\
             'InstanceCount=5'
-        result = self.run_cmd(cmd, 255)
+        result = self.run_cmd(cmd, 252)
         self.assert_error_message_has_field_name(result[1],
                                                  'InstanceGroupType')
 
     def test_instance_groups_missing_instance_type_error(self):
         cmd = self.prefix + ' Name=Task,InstanceGroupType=Task,' +\
             'InstanceCount=5'
-        stderr = self.run_cmd(cmd, 255)[1]
+        stderr = self.run_cmd(cmd, 252)[1]
         self.assert_error_message_has_field_name(stderr, 'InstanceType')
 
     def test_instance_groups_missing_instance_count_error(self):
         cmd = self.prefix + ' Name=Task,InstanceGroupType=Task,' +\
             'InstanceType=m1.xlarge'
-        stderr = self.run_cmd(cmd, 255)[1]
+        stderr = self.run_cmd(cmd, 252)[1]
         self.assert_error_message_has_field_name(stderr, 'InstanceCount')
 
     def test_instance_groups_all_fields(self):
@@ -322,13 +321,13 @@ class TestAddInstanceGroups(BaseAWSCommandParamsTest):
     def test_instance_groups_with_ebs_config_missing_volume_type(self):
         cmd = self.prefix
         cmd += INSTANCE_GROUPS_WITH_EBS_VOLUME_MISSING_VOLTYPE_ARG
-        stderr = self.run_cmd(cmd, 255)[1]
+        stderr = self.run_cmd(cmd, 252)[1]
         self.assert_error_message_has_field_name(stderr, 'VolumeType')
 
     def test_instance_groups_with_ebs_config_missing_size(self):
         cmd = self.prefix
         cmd += INSTANCE_GROUPS_WITH_EBS_VOLUME_MISSING_SIZE_ARG
-        stderr = self.run_cmd(cmd, 255)[1]
+        stderr = self.run_cmd(cmd, 252)[1]
         self.assert_error_message_has_field_name(stderr, 'SizeInGB')
 
     def test_instance_groups_with_ebs_config_missing_volume_spec(self):
@@ -359,7 +358,7 @@ class TestAddInstanceGroups(BaseAWSCommandParamsTest):
                   'InstanceGroups': DEFAULT_INSTANCE_GROUPS_WITH_CUSTOM_AMI}
         self.assert_params_for_cmd(cmd, result)
 
-    @mock.patch('awscli.customizations.emr.emrutils.call')
+    @patch('awscli.customizations.emr.emrutils.call')
     def test_constructed_result(self, call_patch):
         call_patch.return_value = ADD_INSTANCE_GROUPS_RESULT
         cmd = self.prefix

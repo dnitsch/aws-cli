@@ -60,29 +60,29 @@ General Options
 
 The AWS CLI has a few general options:
 
-==================== =========== ===================== ===================== ============================
-Variable             Option      Config Entry          Environment Variable  Description
-==================== =========== ===================== ===================== ============================
-profile              --profile   N/A                   AWS_PROFILE           Default profile name
--------------------- ----------- --------------------- --------------------- ----------------------------
-region               --region    region                AWS_DEFAULT_REGION    Default AWS Region
--------------------- ----------- --------------------- --------------------- ----------------------------
-output               --output    output                AWS_DEFAULT_OUTPUT    Default output style
--------------------- ----------- --------------------- --------------------- ----------------------------
-cli_timestamp_format N/A         cli_timestamp_format  N/A                   Output format of timestamps
--------------------- ----------- --------------------- --------------------- ----------------------------
-cli_follow_urlparam  N/A         cli_follow_urlparam   N/A                   Fetch URL url parameters
--------------------- ----------- --------------------- --------------------- ----------------------------
-ca_bundle            --ca-bundle ca_bundle             AWS_CA_BUNDLE         CA Certificate Bundle
--------------------- ----------- --------------------- --------------------- ----------------------------
-parameter_validation N/A         parameter_validation  N/A                   Toggles parameter validation
--------------------- ----------- --------------------- --------------------- ----------------------------
-tcp_keepalive        N/A         tcp_keepalive         N/A                   Toggles TCP Keep-Alive
--------------------- ----------- --------------------- --------------------- ----------------------------
-max_attempts         N/A         max_attempts          AWS_MAX_ATTEMPTS      Number of total requests
--------------------- ----------- --------------------- --------------------- ----------------------------
-retry_mode           N/A         retry_mode            AWS_RETRY_MODE        Type of retries performed
-==================== =========== ===================== ===================== ============================
+==================== ============== ===================== ===================== ================================
+Variable             Option         Config Entry          Environment Variable  Description
+==================== ============== ===================== ===================== ================================
+profile              --profile      N/A                   AWS_PROFILE           Default profile name
+-------------------- -------------- --------------------- --------------------- --------------------------------
+region               --region       region                AWS_DEFAULT_REGION    Default AWS Region
+-------------------- -------------- --------------------- --------------------- --------------------------------
+output               --output       output                AWS_DEFAULT_OUTPUT    Default output style
+-------------------- -------------- --------------------- --------------------- --------------------------------
+cli_timestamp_format N/A            cli_timestamp_format  N/A                   Output format of timestamps
+-------------------- -------------- --------------------- --------------------- --------------------------------
+ca_bundle            --ca-bundle    ca_bundle             AWS_CA_BUNDLE         CA Certificate Bundle
+-------------------- -------------- --------------------- --------------------- --------------------------------
+parameter_validation N/A            parameter_validation  N/A                   Toggles parameter validation
+-------------------- -------------- --------------------- --------------------- --------------------------------
+tcp_keepalive        N/A            tcp_keepalive         N/A                   Toggles TCP Keep-Alive
+-------------------- -------------- --------------------- --------------------- --------------------------------
+max_attempts         N/A            max_attempts          AWS_MAX_ATTEMPTS      Number of total requests
+-------------------- -------------- --------------------- --------------------- --------------------------------
+retry_mode           N/A            retry_mode            AWS_RETRY_MODE        Type of retries performed
+-------------------- -------------- --------------------- --------------------- --------------------------------
+cli_pager            --no-cli-pager cli_pager             AWS_PAGER             Redirect/Disable output to pager
+==================== ============== ===================== ===================== ================================
 
 The third column, Config Entry, is the value you would specify in the AWS CLI
 config file.  By default, this location is ``~/.aws/config``.  If you need to
@@ -98,19 +98,22 @@ The valid values of the ``output`` configuration variable are:
 ``cli_timestamp_format`` controls the format of timestamps displayed by the AWS CLI.
 The valid values of the ``cli_timestamp_format`` configuration variable are:
 
-* none - Display the timestamp exactly as received from the HTTP response.
+* wire - Display the timestamp exactly as received from the HTTP response.
 * iso8601 - Reformat timestamp using iso8601 in the UTC timezone.
 
-``cli_follow_urlparam`` controls whether or not the CLI will attempt to follow
-URL links in parameters that start with either prefix ``https://`` or
-``http://``.  The valid values of the ``cli_follow_urlparam`` configuration
-variable are:
+``cli_binary_format`` controls the format of binary values in input and output.
+The valid values of the ``cli_binary_format`` configuration variable are:
 
-* true - This is the default value. With this configured the CLI will follow
-  any string parameters that start with ``https://`` or ``http://`` will be
-  fetched, and the downloaded content will be used as the parameter instead.
-* false - The CLI will not treat strings prefixed with ``https://`` or
-  ``http://`` any differently than normal string parameters.
+* base64 - Binary values are provided as Base64 encoded strings. The default.
+* raw-in-base64-out - Binary values are provided are treated literally.
+  Consistent with AWS CLI V1.
+
+When providing contents from a file that map to a binary blob ``fileb://`` will
+always be treated as binary and use the file contents directly regardless of
+the ``cli_binary_format`` setting. When using ``file://`` the file contents
+will need to properly formatted for the configured ``cli_binary_format``.
+
+The default value is ``iso8601``.
 
 ``parameter_validation`` controls whether parameter validation should occur
 when serializing requests. The default is True. You can disable parameter
@@ -409,67 +412,6 @@ Example configuration with parameters::
 Service Specific Configuration
 ==============================
 
-API Versions
-------------
-
-The API version to use for a service can be set using the ``api_versions``
-key. To specify an API version, set the API version to the name of the service
-as a sub value for ``api_versions``.
-
-Example configuration::
-
-    [profile development]
-    aws_access_key_id=foo
-    aws_secret_access_key=bar
-    api_versions =
-        ec2 = 2015-03-01
-        cloudfront = 2015-09-17
-
-By setting an API version for a service, it ensures that the interface for
-that service's commands is representative of the specified API version.
-
-In the example configuration, the ``ec2`` CLI commands will be representative
-of Amazon EC2's ``2015-03-01`` API version and the ``cloudfront`` CLI commands
-will be representative of Amazon CloudFront's ``2015-09-17`` API version.
-
-
-AWS STS
--------
-
-To set STS endpoint resolution logic, use the ``AWS_STS_REGIONAL_ENDPOINTS``
-environment variable or ``sts_regional_endpoints`` configuration file option.
-By default, this configuration option is set to ``legacy``. Valid values are:
-
-* ``regional``
-   Uses the STS endpoint that corresponds to the configured region. For
-   example if the client is configured to use ``us-west-2``, all calls
-   to STS will be make to the ``sts.us-west-2.amazonaws.com`` regional
-   endpoint instead of the global ``sts.amazonaws.com`` endpoint.
-
-* ``legacy``
-   Uses the global STS endpoint, ``sts.amazonaws.com``, for the following
-   configured regions:
-
-   * ``ap-northeast-1``
-   * ``ap-south-1``
-   * ``ap-southeast-1``
-   * ``ap-southeast-2``
-   * ``aws-global``
-   * ``ca-central-1``
-   * ``eu-central-1``
-   * ``eu-north-1``
-   * ``eu-west-1``
-   * ``eu-west-2``
-   * ``eu-west-3``
-   * ``sa-east-1``
-   * ``us-east-1``
-   * ``us-east-2``
-   * ``us-west-1``
-   * ``us-west-2``
-
-   All other regions will use their respective regional endpoint.
-
-
 Retry Configuration
 -------------------
 
@@ -487,8 +429,6 @@ These configuration variables control how the AWS CLI retries requests.
     A string representing the type of retries the AWS CLI will perform.  Value
     values are:
 
-        * ``legacy`` - The pre-existing retry behavior.  This is default value if
-          no retry mode is provided.
         * ``standard`` - A standardized set of retry rules across the AWS SDKs.
           This includes a standard set of errors that are retried as well as
           support for retry quotas, which limit the number of unsuccessful retries
@@ -521,3 +461,96 @@ locale will depend on your operating system and your specific IT requirements.
 One option for UNIX systems is the ``LC_ALL`` environment variable. Setting
 ``LC_ALL=en_US.UTF-8``, for instance, would give you a United States English
 locale which is compatible with unicode.
+
+To set encoding used for text files different from the locale, you can use
+``AWS_CLI_FILE_ENCODING`` environment variable. For example, if you use Windows
+with default encoding ``CP1252``, setting ``AWS_CLI_FILE_ENCODING=UTF-8`` would
+make CLI ignore locale encoding and open text files using ``UTF-8``.
+
+Pager
+-----
+
+The AWS CLI uses a pager for output data that does not fit on the screen.
+
+On Linux/MacOS, ``less`` is used as the default pager. On Windows,
+the default is ``more``.
+
+Configuring pager
+^^^^^^^^^^^^^^^^^^
+
+You can override the default pager with the following configuration
+options. These are in order of precedence:
+
+* ``AWS_PAGER`` environment variable
+
+* ``cli_pager`` shared config variable
+
+* ``PAGER`` environment variable
+
+If you set any of the configuration options to an empty string
+(e.g. ``AWS_PAGER=""``) or use ``--no-cli-pager`` option in the command line the
+AWS CLI will not send the output to a pager.
+
+Examples
+""""""""
+
+To disable the pager for ``default`` profile::
+
+    aws configure set cli_pager "" --profile default
+
+To disable the pager for all profiles in the current terminal session::
+
+    export AWS_PAGER="" - for Linux
+
+    set AWS_PAGER="" - for Windows cmd
+
+To disable the pager for one command call::
+
+    aws <command> <sub-command> --no-cli-pager
+
+
+Pager settings
+^^^^^^^^^^^^^^
+
+If the ``LESS`` environment variable is not set the AWS CLI will set it to ``FRX``
+(see "less" manual page for more information about possible options
+https://man7.org/linux/man-pages/man1/less.1.html)
+in order to set the appropriate flags. If you set the ``LESS`` env var, we will
+not clobber it with ours (e.g. ``FRX``). Be aware that different shells can
+have different default values for the ``LESS`` environment variable that can cause
+unexpected behavior of AWS CLI output
+
+You can also set flags when specifying the pager and those will combine
+with any environment variables we set (e.g. ``AWS_PAGER="less -S"`` will make it
+less ``-FRXS``). The behavior of combining flags is a feature of ``less``.
+You can also negate flags we set by specifying it on the command line:
+(e.g. ``AWS_PAGER="less -+F"`` will deactivate the quit if one screen behavior)
+
+For Windows, ``more`` is used with no additional environment variables.
+
+Plugins
+=======
+
+.. warning::
+   Plugin support in the AWS CLI v2 is completely provisional and intended to
+   help users migrate from AWS CLI v1 until a stable plugin interface is
+   released. There are no guarantees that a particular plugin or even the
+   CLI plugin interface will be supported in future versions of the AWS CLI v2.
+   If you are relying on plugins, be sure to lock to a particular version of
+   the CLI and test functionality of your plugin when you do upgrade.
+
+To enable plugin support, create ``[plugins]`` section in your
+``~/.aws/config`` file::
+
+     [plugins]
+     cli_legacy_plugin_path = <path-to-plugins>/python3.8/site-packages
+     <plugin-name> = <plugin-module>
+
+
+In the ``[plugins]`` section, you must define the ``cli_legacy_plugin_path``
+variable and set its value to the Python site packages path that your plugin
+lives in. Once defined, you can configure plugins by providing a name for the
+plugin, ``plugin-name``, and the Python module, ``plugin-module``, that
+contains the source code for your plugin. Then, the CLI loads each plugin
+by importing their ``plugin-module`` and calling their ``awscli_initialize``
+function.

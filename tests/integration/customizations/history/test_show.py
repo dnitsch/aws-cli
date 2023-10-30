@@ -90,7 +90,7 @@ class TestShow(unittest.TestCase):
                 'parsed to: {',
                 '    "Error": {',
                 'AWS CLI command exited',
-                'with return code: 255'
+                'with return code: 254'
             ],
             uncolored_content
         )

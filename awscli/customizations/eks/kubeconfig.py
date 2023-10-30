@@ -11,15 +11,18 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 
-import os
-import yaml
-import logging
 import errno
+import os
+
+import ruamel.yaml as yaml
 from botocore.compat import OrderedDict
 
+from awscli.compat import compat_open
 from awscli.customizations.eks.exceptions import EKSError
-from awscli.customizations.eks.ordered_yaml import (ordered_yaml_load,
-                                                    ordered_yaml_dump)
+from awscli.customizations.eks.ordered_yaml import (
+    ordered_yaml_load,
+    ordered_yaml_dump
+)
 
 
 class KubeconfigError(EKSError):
@@ -66,13 +69,6 @@ class Kubeconfig(object):
             return False
         return name in [cluster['name']
                         for cluster in self.content['clusters'] if 'name' in cluster]
-
-    def __eq__(self, other):
-        return (
-            isinstance(other, Kubeconfig)
-            and self.path == other.path
-            and self.content == other.content
-        )
 
 
 class KubeconfigValidator(object):
@@ -154,8 +150,8 @@ class KubeconfigLoader(object):
         :rtype: Kubeconfig
         """
         try:
-            with open(path, "r") as stream:
-                loaded_content=ordered_yaml_load(stream)
+            with compat_open(path, "r") as stream:
+                loaded_content = ordered_yaml_load(stream)
         except IOError as e:
             if e.errno == errno.ENOENT:
                 loaded_content=None
@@ -193,14 +189,10 @@ class KubeconfigWriter(object):
                 raise KubeconfigInaccessableError(
                     f"Can't create directory for writing: {e}")
         try:
-            with os.fdopen(
-                    os.open(
-                        config.path,
-                        os.O_CREAT | os.O_RDWR | os.O_TRUNC,
-                        0o600),
-                    "w+") as stream:
+            with compat_open(
+                    config.path, "w+", access_permissions=0o600) as stream:
                 ordered_yaml_dump(config.content, stream)
-        except (IOError, OSError) as e:
+        except IOError as e:
             raise KubeconfigInaccessableError(
                 f"Can't open kubeconfig for writing: {e}")
 

@@ -22,6 +22,7 @@ from awscli.table import COLORAMA_KWARGS
 from awscli.compat import six
 from awscli.customizations.history.commands import HistorySubcommand
 from awscli.customizations.history.filters import RegexFilter
+from awscli.customizations.exceptions import ParamValidationError
 
 
 class Formatter(object):
@@ -45,7 +46,7 @@ class Formatter(object):
         if self._output is None:
             self._output = sys.stdout
         if include and exclude:
-            raise ValueError(
+            raise ParamValidationError(
                 'Either input or exclude can be provided but not both')
         self._include = include
         self._exclude = exclude
@@ -213,8 +214,6 @@ class DetailedFormatter(Formatter):
         self._write_output(formatted_value)
 
     def _write_output(self, content):
-        if isinstance(content, six.text_type):
-            content = content.encode('utf-8')
         self._output.write(content)
 
     def _format_section_title(self, title, event_record):
@@ -378,9 +377,9 @@ class ShowCommand(HistorySubcommand):
         self._connect_to_history_db()
         try:
             self._validate_args(parsed_args)
-            with self._get_output_stream() as output_stream:
+            with self._output_stream_factory.get_output_stream() as stream:
                 formatter = self._get_formatter(
-                    parsed_args, parsed_globals, output_stream)
+                    parsed_args, parsed_globals, stream)
                 for record in self._get_record_iterator(parsed_args):
                     formatter.display(record)
         finally:
@@ -389,7 +388,7 @@ class ShowCommand(HistorySubcommand):
 
     def _validate_args(self, parsed_args):
         if parsed_args.exclude and parsed_args.include:
-            raise ValueError(
+            raise ParamValidationError(
                 'Either --exclude or --include can be provided but not both')
 
     def _get_formatter(self, parsed_args, parsed_globals, output_stream):

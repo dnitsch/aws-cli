@@ -22,14 +22,17 @@ from zlib import error as ZLibError
 from datetime import datetime, timedelta
 from dateutil import tz, parser
 
-from pyasn1.error import PyAsn1Error
-import rsa
+import cryptography
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 from awscli.customizations.cloudtrail.utils import get_trail_by_arn, \
-    get_account_id_from_arn
+    get_account_id_from_arn, PublicKeyProvider
 from awscli.customizations.commands import BasicCommand
+from awscli.customizations.exceptions import ParamValidationError
 from botocore.exceptions import ClientError
-from awscli.schema import ParameterRequiredError
 
 
 LOG = logging.getLogger(__name__)
@@ -66,16 +69,20 @@ def parse_date(date_string):
     try:
         return parser.parse(date_string)
     except ValueError:
-        raise ValueError('Unable to parse date value: %s' % date_string)
+        raise ParamValidationError(
+            'Unable to parse date value: %s' % date_string
+        )
 
 
 def assert_cloudtrail_arn_is_valid(trail_arn):
     """Ensures that the arn looks correct.
 
     ARNs look like: arn:aws:cloudtrail:us-east-1:123456789012:trail/foo"""
-    pattern = re.compile('arn:.+:cloudtrail:.+:\d{12}:trail/.+')
+    pattern = re.compile(r'arn:.+:cloudtrail:.+:\d{12}:trail/.+')
     if not pattern.match(trail_arn):
-        raise ValueError('Invalid trail ARN provided: %s' % trail_arn)
+        raise ParamValidationError(
+            'Invalid trail ARN provided: %s' % trail_arn
+        )
 
 
 def create_digest_traverser(cloudtrail_client, organization_client,
@@ -129,7 +136,7 @@ def create_digest_traverser(cloudtrail_client, organization_client,
         is_org_trail = trail_info.get('IsOrganizationTrail')
         if is_org_trail:
             if not account_id:
-                raise ParameterRequiredError(
+                raise ParamValidationError(
                     "Missing required parameter for organization "
                     "trail: '--account-id'")
             organization_id = organization_client.describe_organization()[
@@ -210,29 +217,6 @@ class InvalidDigestFormat(DigestError):
         message = 'Digest file\ts3://%s/%s\tINVALID: invalid format' % (bucket,
                                                                         key)
         super(InvalidDigestFormat, self).__init__(message)
-
-
-class PublicKeyProvider(object):
-    """Retrieves public keys from CloudTrail within a date range."""
-    def __init__(self, cloudtrail_client):
-        self._cloudtrail_client = cloudtrail_client
-
-    def get_public_keys(self, start_date, end_date):
-        """Loads public keys in a date range into a returned dict.
-
-        :type start_date: datetime
-        :param start_date: Start date of a date range.
-        :type end_date: datetime
-        :param end_date: End date of a date range.
-        :rtype: dict
-        :return: Returns a dict where each key is the fingerprint of the
-            public key, and each value is a dict of public key data.
-        """
-        public_keys = self._cloudtrail_client.list_public_keys(
-            StartTime=start_date, EndTime=end_date)
-        public_keys_in_range = public_keys['PublicKeyList']
-        LOG.debug('Loaded public keys in range: %s', public_keys_in_range)
-        return dict((key['Fingerprint'], key) for key in public_keys_in_range)
 
 
 class DigestProvider(object):
@@ -571,20 +555,19 @@ class Sha256RSADigestValidator(object):
         """
         try:
             decoded_key = base64.b64decode(public_key)
-            public_key = rsa.PublicKey.load_pkcs1(decoded_key, format='DER')
+            public_key = load_der_public_key(decoded_key, default_backend())
             to_sign = self._create_string_to_sign(digest_data, inflated_digest)
             signature_bytes = binascii.unhexlify(digest_data['_signature'])
-            rsa.verify(to_sign, signature_bytes, public_key)
-        except PyAsn1Error:
+            hashing = hashes.SHA256()
+            public_key.verify(signature_bytes, to_sign, PKCS1v15(), hashing)
+        except ValueError:
             raise DigestError(
                 ('Digest file\ts3://%s/%s\tINVALID: Unable to load PKCS #1 key'
                  ' with fingerprint %s')
                 % (bucket, key, digest_data['digestPublicKeyFingerprint']))
-        except rsa.pkcs1.VerificationError:
-            # Note from the Python-RSA docs: Never display the stack trace of
-            # a rsa.pkcs1.VerificationError exception. It shows where in the
-            # code the exception occurred, and thus leaks information about
-            # the key.
+        except cryptography.exceptions.InvalidSignature:
+            # Don't display the stack trace of a signature exception to avoid
+            # leaking any information about the key.
             raise DigestSignatureError(bucket, key)
 
     def _create_string_to_sign(self, digest_data, inflated_digest):
@@ -722,8 +705,10 @@ class CloudTrailValidateLogs(BasicCommand):
         else:
             self.end_time = normalize_date(datetime.utcnow())
         if self.start_time > self.end_time:
-            raise ValueError(('Invalid time range specified: start-time must '
-                              'occur before end-time'))
+            raise ParamValidationError(
+                'Invalid time range specified: start-time must '
+                'occur before end-time'
+            )
         # Found start time always defaults to the given start time. This value
         # may change if the earliest found digest is after the given start
         # time. Note that the summary output report of what date ranges were

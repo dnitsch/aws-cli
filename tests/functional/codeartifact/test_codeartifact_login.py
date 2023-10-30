@@ -4,11 +4,15 @@ import platform
 import subprocess
 import time
 
+from configparser import RawConfigParser
+from io import StringIO
+from urllib.parse import urlsplit
+
 from botocore.utils import parse_timestamp
 
 from tests import CLIRunner, AWSRequest, AWSResponse
 from awscli.testutils import unittest, FileCreator, mock
-from awscli.compat import urlparse, StringIO, RawConfigParser
+from awscli.compat import urlparse
 from awscli.customizations.codeartifact.login import CodeArtifactLogin
 
 
@@ -171,7 +175,7 @@ class TestCodeArtifactLogin(unittest.TestCase):
         npm_cmd = 'npm.cmd' \
             if platform.system().lower() == 'windows' else 'npm'
 
-        repo_uri = urlparse.urlsplit(self.endpoint)
+        repo_uri = urlsplit(self.endpoint)
         always_auth_config = '//{}{}:always-auth'.format(
             repo_uri.netloc, repo_uri.path
         )
@@ -197,7 +201,7 @@ class TestCodeArtifactLogin(unittest.TestCase):
 
     def _get_pip_commands(self):
         pip_index_url_fmt = '{scheme}://aws:{auth_token}@{netloc}{path}simple/'
-        repo_uri = urlparse.urlsplit(self.endpoint)
+        repo_uri = urlsplit(self.endpoint)
         pip_index_url = pip_index_url_fmt.format(
             scheme=repo_uri.scheme,
             auth_token=self.auth_token,

@@ -10,10 +10,13 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock, unittest
+from awscli.testutils import unittest
 from awscli.testutils import BaseAWSCommandParamsTest
 from awscli.help import PagingHelpRenderer
 from awscli.customizations.cloudsearchdomain import validate_endpoint_url
+from awscli.customizations.exceptions import ParamValidationError
+
+import mock
 
 
 class TestSearchCommand(BaseAWSCommandParamsTest):
@@ -38,7 +41,7 @@ class TestSearchCommand(BaseAWSCommandParamsTest):
     def test_endpoint_is_required(self):
         cmd = self.prefix.split()
         cmd += ['--search-query', 'foo']
-        stderr = self.run_cmd(cmd, expected_rc=255)[1]
+        stderr = self.run_cmd(cmd, expected_rc=252)[1]
         self.assertIn('--endpoint-url is required', stderr)
 
     def test_endpoint_not_required_for_help(self):
@@ -58,8 +61,8 @@ class TestCloudsearchDomainHandler(unittest.TestCase):
         parsed_globals = mock.Mock()
         parsed_globals.endpoint_url = None
         # Method should return instantiated exception.
-        self.assertTrue(isinstance(validate_endpoint_url(parsed_globals),
-                                   ValueError))
+        err = validate_endpoint_url(parsed_globals)
+        self.assertTrue(isinstance(err, ParamValidationError))
 
 
 if __name__ == "__main__":

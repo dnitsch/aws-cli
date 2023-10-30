@@ -31,7 +31,13 @@ class TestBasicCommandFunctionality(unittest.TestCase):
     test to verify basic CLI functionality isn't entirely broken.
     """
 
-    def put_object(self, bucket, key, content, extra_args=None):
+    def put_object(
+        self, 
+        bucket, 
+        key, 
+        content, 
+        extra_args=None, 
+    ):
         session = botocore.session.get_session()
         client = session.create_client('s3', 'us-east-1')
         client.create_bucket(Bucket=bucket, ObjectOwnership='ObjectWriter')
@@ -141,7 +147,7 @@ class TestBasicCommandFunctionality(unittest.TestCase):
         p = aws(
             'ec2 describe-instances --filters '
             '\'{"Name": "bad-filter", "Values": ["i-123"]}\'')
-        self.assertEqual(p.rc, 255)
+        self.assertEqual(p.rc, 254)
         self.assertIn("The filter 'bad-filter' is invalid", p.stderr,
                       "stdout: %s, stderr: %s" % (p.stdout, p.stderr))
 
@@ -187,7 +193,7 @@ class TestBasicCommandFunctionality(unittest.TestCase):
         p = aws('s3api get-object --bucket %s --key foo %s' % (
             bucket_name, os.path.join(d, 'foo')), env_vars=env_vars)
         # Should have credential issues.
-        self.assertEqual(p.rc, 255)
+        self.assertEqual(p.rc, 254)
 
         p = aws('s3api get-object --bucket %s --key foo '
                 '%s --no-sign-request' % (bucket_name, os.path.join(d, 'foo')),
@@ -247,7 +253,7 @@ class TestBasicCommandFunctionality(unittest.TestCase):
 
     def test_unknown_argument(self):
         p = aws('ec2 describe-instances --filterss')
-        self.assertEqual(p.rc, 255)
+        self.assertEqual(p.rc, 252)
         self.assertIn('Unknown options: --filterss', p.stderr)
 
     def test_table_output(self):
@@ -278,7 +284,7 @@ class TestBasicCommandFunctionality(unittest.TestCase):
 
     def test_leftover_args_in_operation(self):
         p = aws('ec2 describe-instances BADKEY=foo')
-        self.assertEqual(p.rc, 255)
+        self.assertEqual(p.rc, 252)
         self.assertIn("Unknown option", p.stderr, p.stderr)
 
     def test_json_param_parsing(self):
@@ -305,10 +311,8 @@ class TestBasicCommandFunctionality(unittest.TestCase):
 
     def test_error_msg_with_no_region_configured(self):
         environ = os.environ.copy()
-        try:
-            del environ['AWS_DEFAULT_REGION']
-        except KeyError:
-            pass
+        environ.pop('AWS_REGION', None)
+        environ.pop('AWS_DEFAULT_REGION', None)
         environ['AWS_CONFIG_FILE'] = 'nowhere-foo'
         p = aws('ec2 describe-instances', env_vars=environ)
         self.assertIn('must specify a region', p.stderr)
@@ -463,7 +467,7 @@ class TestGlobalArgs(BaseS3CLICommand):
         # private.
         p = aws('s3api head-object --bucket %s --key private --no-sign-request'
                 % bucket_name, env_vars=env)
-        self.assertEqual(p.rc, 255)
+        self.assertEqual(p.rc, 254)
 
     def test_profile_arg_has_precedence_over_env_vars(self):
         # At a high level, we're going to set access_key/secret_key

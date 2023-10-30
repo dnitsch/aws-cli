@@ -10,8 +10,8 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from .subscribe import CloudTrailSubscribe, CloudTrailUpdate
 from .validation import CloudTrailValidateLogs
+from .verifyqueryresults import CloudTrailVerifyQueryResult
 
 
 def initialize(cli):
@@ -27,6 +27,5 @@ def inject_commands(command_table, session, **kwargs):
     high level commands into the command list. These high level commands
     must not collide with existing low-level API call names.
     """
-    command_table['create-subscription'] = CloudTrailSubscribe(session)
-    command_table['update-subscription'] = CloudTrailUpdate(session)
     command_table['validate-logs'] = CloudTrailValidateLogs(session)
+    command_table['verify-query-results'] = CloudTrailVerifyQueryResult(session)

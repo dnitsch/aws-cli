@@ -12,11 +12,11 @@
 # language governing permissions and limitations under the License.
 import json
 
+import mock
 from botocore import xform_name
 from botocore import model
 from botocore.compat import OrderedDict
 
-from awscli.testutils import mock
 from awscli.testutils import unittest
 from awscli.testutils import BaseCLIDriverTest
 from awscli.testutils import temporary_file
@@ -27,7 +27,7 @@ from awscli.argprocess import ParamShorthandParser
 from awscli.argprocess import ParamShorthandDocGen
 from awscli.argprocess import ParamError
 from awscli.argprocess import ParamUnknownKeyError
-from awscli.paramfile import URIArgumentHandler
+from awscli.paramfile import URIArgumentHandler, LOCAL_PREFIX_MAP
 from awscli.arguments import CustomArgument, CLIArgument
 from awscli.arguments import ListArgument, BooleanArgument
 from awscli.arguments import create_argument_model_from_schema
@@ -70,7 +70,7 @@ class BaseArgProcessTest(BaseCLIDriverTest):
 class TestURIParams(BaseArgProcessTest):
     def setUp(self):
         super(TestURIParams, self).setUp()
-        self.uri_param = URIArgumentHandler()
+        self.uri_param = URIArgumentHandler(LOCAL_PREFIX_MAP.copy())
 
     def test_uri_param(self):
         p = self.get_param_model('ec2.DescribeInstances.Filters')
@@ -82,26 +82,6 @@ class TestURIParams(BaseArgProcessTest):
             f.flush()
             result = self.uri_param('event-name', p, 'file://%s' % f.name)
         self.assertEqual(result, json_argument)
-
-    def test_uri_param_no_paramfile_false(self):
-        p = self.get_param_model('ec2.DescribeInstances.Filters')
-        p.no_paramfile = False
-        with temporary_file('r+') as f:
-            json_argument = json.dumps([{"Name": "instance-id", "Values": ["i-1234"]}])
-            f.write(json_argument)
-            f.flush()
-            result = self.uri_param('event-name', p, 'file://%s' % f.name)
-        self.assertEqual(result, json_argument)
-
-    def test_uri_param_no_paramfile_true(self):
-        p = self.get_param_model('ec2.DescribeInstances.Filters')
-        p.no_paramfile = True
-        with temporary_file('r+') as f:
-            json_argument = json.dumps([{"Name": "instance-id", "Values": ["i-1234"]}])
-            f.write(json_argument)
-            f.flush()
-            result = self.uri_param('event-name', p, 'file://%s' % f.name)
-        self.assertEqual(result, None)
 
 
 class TestArgShapeDetection(BaseArgProcessTest):
@@ -272,8 +252,9 @@ class TestParamShorthand(BaseArgProcessTest):
     def test_list_structure_scalars(self):
         p = self.get_param_model(
             'elb.RegisterInstancesWithLoadBalancer.Instances')
-        event_name = ('process-cli-arg.elastic-load-balancing'
-                      '.register-instances-with-load-balancer')
+        event_name = (
+            'process-cli-arg.elb.register-instances-with-load-balancer'
+        )
         # Because this is a list type param, we'll use nargs
         # with argparse which means the value will be presented
         # to us as a list.
@@ -533,12 +514,11 @@ class TestDocGen(BaseArgProcessTest):
         self.shorthand_documenter = ParamShorthandDocGen()
         self.service_name = 'foo'
         self.operation_name = 'bar'
-        self.service_id = 'baz'
 
     def get_generated_example_for(self, argument):
         # Returns a string containing the generated documentation.
         return self.shorthand_documenter.generate_shorthand_example(
-            argument, self.service_id, self.operation_name)
+            argument, self.service_name, self.operation_name)
 
     def assert_generated_example_is(self, argument, expected_docs):
         generated_docs = self.get_generated_example_for(argument)
@@ -558,7 +538,6 @@ class TestDocGen(BaseArgProcessTest):
 
     def test_gen_list_scalar_docs(self):
         self.service_name = 'elb'
-        self.service_id = 'elastic-load-balancing'
         self.operation_name = 'register-instances-with-load-balancer'
         argument = self.get_param_model(
             'elb.RegisterInstancesWithLoadBalancer.Instances')
@@ -828,7 +807,7 @@ class TestUnpackJSONParams(BaseArgProcessTest):
         # Parameter name should be in error message.
         self.assertIn('--block-device-mappings', str(e.exception))
         # The actual JSON itself should be in the error message.
-        # Because this is a list, only the first element in the JSON
+        # Becaues this is a list, only the first element in the JSON
         # will show.  This will at least let customers know what
         # we tried to parse.
         self.assertIn('[{', str(e.exception))

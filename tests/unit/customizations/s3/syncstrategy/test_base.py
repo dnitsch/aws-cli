@@ -12,10 +12,13 @@
 # language governing permissions and limitations under the License.
 import datetime
 
+from mock import Mock, patch
+
 from awscli.customizations.s3.filegenerator import FileStat
 from awscli.customizations.s3.syncstrategy.base import BaseSync, \
     SizeAndLastModifiedSync, MissingFileSync, NeverSync
-from awscli.testutils import mock, unittest
+from awscli.testutils import unittest
+from awscli.customizations.exceptions import ParamValidationError
 
 
 class TestBaseSync(unittest.TestCase):
@@ -30,18 +33,18 @@ class TestBaseSync(unittest.TestCase):
             self.assertEqual(strategy.sync_type, sync_type)
 
         # Check for invalid ``sync_type`` options.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ParamValidationError):
             BaseSync('wrong_sync_type')
 
     def test_register_strategy(self):
         """
         Ensures that the class registers all of the necessary handlers
         """
-        session = mock.Mock()
+        session = Mock()
         self.sync_strategy.register_strategy(session)
         register_args = session.register.call_args_list
         self.assertEqual(register_args[0][0][0],
-                         'building-arg-table.sync')
+                         'building-arg-table.s3_sync')
         self.assertEqual(register_args[0][0][1],
                          self.sync_strategy.add_sync_argument)
         self.assertEqual(register_args[1][0][0], 'choosing-s3-sync-strategy')

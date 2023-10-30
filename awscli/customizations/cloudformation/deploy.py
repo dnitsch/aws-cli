@@ -11,12 +11,16 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 
+import functools
+import json
 import os
 import sys
 import logging
 
 from botocore.client import Config
 
+from awscli.compat import compat_open
+from awscli.customizations.exceptions import ParamValidationError
 from awscli.customizations.cloudformation import exceptions
 from awscli.customizations.cloudformation.deployer import Deployer
 from awscli.customizations.s3uploader import S3Uploader
@@ -27,6 +31,70 @@ from awscli.compat import get_stdout_text_writer
 from awscli.utils import write_exception
 
 LOG = logging.getLogger(__name__)
+
+
+class BaseParameterOverrideParser:
+    def can_parse(self, data):
+        # Returns true/false if it can parse
+        raise NotImplementedError('can_parse')
+
+    def parse(self, data):
+        # Return the properly formatted parameter dictionary
+        raise NotImplementedError('parse')
+
+
+class CodePipelineLikeParameterOverrideParser(BaseParameterOverrideParser):
+    def can_parse(self, data):
+        return isinstance(data, dict) and 'Parameters' in data
+
+    def parse(self, data):
+        # Parse parameter_overrides if they were given in
+        # CodePipeline params file format
+        # {
+        #     "Parameters": {
+        #         "ParameterKey": "ParameterValue"
+        #     }
+        # }
+        return data['Parameters']
+
+
+class CloudFormationLikeParameterOverrideParser(BaseParameterOverrideParser):
+    def can_parse(self, data):
+        for param_pair in data:
+            if ('ParameterKey' not in param_pair or
+                    'ParameterValue' not in param_pair):
+                return False
+            if len(param_pair.keys()) > 2:
+                return False
+        return True
+
+    def parse(self, data):
+        # Parse parameter_overrides if they were given in
+        # CloudFormation params file format
+        # [{
+        #   "ParameterKey": "string",
+        #   "ParameterValue": "string",
+        # }]
+        return {
+            param['ParameterKey']: param['ParameterValue']
+            for param in data
+        }
+
+
+class StringEqualsParameterOverrideParser(BaseParameterOverrideParser):
+    def can_parse(self, data):
+        return all(
+            isinstance(param, str) and len(param.split("=", 1)) == 2
+            for param in data
+        )
+
+    def parse(self, data):
+        result = {}
+        for param in data:
+            # Split at first '=' from left
+            key_value_pair = param.split("=", 1)
+            result[key_value_pair[0]] = key_value_pair[1]
+        return result
 
 
 class DeployCommand(BasicCommand):
@@ -106,12 +174,7 @@ class DeployCommand(BasicCommand):
             'name': PARAMETER_OVERRIDE_CMD,
             'action': 'store',
             'required': False,
-            'schema': {
-                'type': 'array',
-                'items': {
-                    'type': 'string'
-                }
-            },
+            'nargs': '+',
             'default': [],
             'help_text': (
                 'A list of parameter structures that specify input parameters'
@@ -120,7 +183,7 @@ class DeployCommand(BasicCommand):
                 ' existing value. For new stacks, you must specify'
                 ' parameters that don\'t have a default value.'
                 ' Syntax: ParameterKey1=ParameterValue1'
-                ' ParameterKey2=ParameterValue2 ...'
+                ' ParameterKey2=ParameterValue2 ... or JSON file (see Examples)'
             )
         },
         {
@@ -222,11 +285,11 @@ class DeployCommand(BasicCommand):
             'action': 'store_true',
             'group_name': 'fail-on-empty-changeset',
             'dest': 'fail_on_empty_changeset',
-            'default': True,
+            'default': False,
             'help_text': (
                 'Specify if the CLI should return a non-zero exit code if '
                 'there are no changes to be made to the stack. The default '
-                'behavior is to return a non-zero exit code.'
+                'behavior is to return a zero exit code.'
             )
         },
         {
@@ -235,7 +298,7 @@ class DeployCommand(BasicCommand):
             'action': 'store_false',
             'group_name': 'fail-on-empty-changeset',
             'dest': 'fail_on_empty_changeset',
-            'default': True,
+            'default': False,
             'help_text': (
                 'Causes the CLI to return an exit code of 0 if there are no '
                 'changes to be made to the stack.'
@@ -268,29 +331,20 @@ class DeployCommand(BasicCommand):
                     endpoint_url=parsed_globals.endpoint_url,
                     verify=parsed_globals.verify_ssl)
 
-        template_path = parsed_args.template_file
-        if not os.path.isfile(template_path):
-            raise exceptions.InvalidTemplatePathError(
-                    template_path=template_path)
-
-        # Parse parameters
-        with open(template_path, "r") as handle:
-            template_str = handle.read()
+        template_dict, template_str, template_size = self.load_template_file(
+            parsed_args.template_file)
 
         stack_name = parsed_args.stack_name
-        parameter_overrides = self.parse_key_value_arg(
-                parsed_args.parameter_overrides,
-                self.PARAMETER_OVERRIDE_CMD)
-
+        parameter_overrides = self.parse_parameter_overrides(
+            parsed_args.parameter_overrides
+        )
         tags_dict = self.parse_key_value_arg(parsed_args.tags, self.TAGS_CMD)
         tags = [{"Key": key, "Value": value}
                 for key, value in tags_dict.items()]
 
-        template_dict = yaml_parse(template_str)
 
         parameters = self.merge_parameters(template_dict, parameter_overrides)
 
-        template_size = os.path.getsize(parsed_args.template_file)
         if template_size > 51200 and not parsed_args.s3_bucket:
             raise exceptions.DeployBucketRequiredError()
 
@@ -318,10 +372,21 @@ class DeployCommand(BasicCommand):
                            tags, parsed_args.fail_on_empty_changeset,
                            parsed_args.disable_rollback)
 
+    def load_template_file(self, template_file):
+        template_path = os.path.expanduser(template_file)
+        if not os.path.isfile(template_path):
+            raise exceptions.InvalidTemplatePathError(
+                    template_path=template_path)
+        with compat_open(template_path, "r") as handle:
+            template_str = handle.read()
+        template_dict = yaml_parse(template_str)
+        template_size = os.path.getsize(template_path)
+        return template_dict, template_str, template_size
+
     def deploy(self, deployer, stack_name, template_str,
                parameters, capabilities, execute_changeset, role_arn,
                notification_arns, s3_uploader, tags,
-               fail_on_empty_changeset=True, disable_rollback=False):
+               fail_on_empty_changeset=False, disable_rollback=False):
         try:
             result = deployer.create_and_wait_for_changeset(
                 stack_name=stack_name,
@@ -383,6 +448,42 @@ class DeployCommand(BasicCommand):
 
         return parameter_values
 
+    def _parse_input_as_json(self, arg_value):
+        # In case of reading from file it'll be string and in case
+        # of inline json input it'll be list where json string
+        # will be the first element
+        if arg_value:
+            if isinstance(arg_value, str):
+                return json.loads(arg_value)
+            try:
+                return json.loads(arg_value[0])
+            except json.JSONDecodeError:
+                return None
+
+    def parse_parameter_overrides(self, arg_value):
+        data = self._parse_input_as_json(arg_value)
+        if data is not None:
+            parsers = [
+                CloudFormationLikeParameterOverrideParser(),
+                CodePipelineLikeParameterOverrideParser(),
+                StringEqualsParameterOverrideParser()
+            ]
+            for parser in parsers:
+                if parser.can_parse(data):
+                    return parser.parse(data)
+            raise ParamValidationError(
+                'JSON passed to --parameter-overrides must be one of '
+                'the formats: ["Key1=Value1","Key2=Value2", ...] , '
+                '[{"ParameterKey": "Key1", "ParameterValue": "Value1"}, ...] , '
+                '["Parameters": {"Key1": "Value1", "Key2": "Value2", ...}]')
+        else:
+            # In case it was in deploy command format
+            # and was input via command line
+            return self.parse_key_value_arg(
+                arg_value,
+                self.PARAMETER_OVERRIDE_CMD
+            )
+
     def parse_key_value_arg(self, arg_value, argname):
         """
         Converts arguments that are passed as list of "Key=Value" strings
@@ -407,6 +508,3 @@ class DeployCommand(BasicCommand):
             result[key_value_pair[0]] = key_value_pair[1]
 
         return result
-
-
-

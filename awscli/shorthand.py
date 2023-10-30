@@ -71,7 +71,7 @@ class ShorthandParseError(Exception):
             num_spaces = self.index - last_newline - 1
         if '\n' in self.value[self.index:]:
             # If there's newline in the remaining, divide value
-            # into consumed and remaining
+            # into consumed and remainig
             # foo==bar,\n
             #     ^
             # bar=baz
@@ -129,9 +129,9 @@ class ShorthandParser(object):
 
     _SINGLE_QUOTED = _NamedRegex('singled quoted', r'\'(?:\\\\|\\\'|[^\'])*\'')
     _DOUBLE_QUOTED = _NamedRegex('double quoted', r'"(?:\\\\|\\"|[^"])*"')
-    _START_WORD = u'\!\#-&\(-\+\--\<\>-Z\\\\-z\u007c-\uffff'
-    _FIRST_FOLLOW_CHARS = u'\s\!\#-&\(-\+\--\\\\\^-\|~-\uffff'
-    _SECOND_FOLLOW_CHARS = u'\s\!\#-&\(-\+\--\<\>-\uffff'
+    _START_WORD = r'\!\#-&\(-\+\--\<\>-Z\\-z' + '\u007c-\uffff'
+    _FIRST_FOLLOW_CHARS = r'\s\!\#-&\(-\+\--\\\^-\|~-' + '\uffff'
+    _SECOND_FOLLOW_CHARS = r'\s\!\#-&\(-\+\--\<\>-' + '\uffff'
     _ESCAPED_COMMA = '(\\\\,)'
     _FIRST_VALUE = _NamedRegex(
         'first',

@@ -22,6 +22,12 @@ from awscli.customizations.configure.set import ConfigureSetCommand
 from awscli.customizations.configure.get import ConfigureGetCommand
 from awscli.customizations.configure.list import ConfigureListCommand
 from awscli.customizations.configure.writer import ConfigFileWriter
+from awscli.customizations.configure.importer import ConfigureImportCommand
+from awscli.customizations.configure.listprofiles import ListProfilesCommand
+from awscli.customizations.configure.sso import ConfigureSSOCommand
+from awscli.customizations.configure.sso import ConfigureSSOSessionCommand
+from awscli.customizations.configure.exportcreds import \
+    ConfigureExportCredentialsCommand
 
 from . import mask_value, profile_to_section
 
@@ -73,7 +79,13 @@ class ConfigureCommand(BasicCommand):
         {'name': 'list', 'command_class': ConfigureListCommand},
         {'name': 'get', 'command_class': ConfigureGetCommand},
         {'name': 'set', 'command_class': ConfigureSetCommand},
-        {'name': 'add-model', 'command_class': AddModelCommand}
+        {'name': 'add-model', 'command_class': AddModelCommand},
+        {'name': 'import', 'command_class': ConfigureImportCommand},
+        {'name': 'list-profiles', 'command_class': ListProfilesCommand},
+        {'name': 'sso', 'command_class': ConfigureSSOCommand},
+        {'name': 'sso-session', 'command_class': ConfigureSSOSessionCommand},
+        {'name': 'export-credentials',
+         'command_class': ConfigureExportCredentialsCommand},
     ]
 
     # If you want to add new values to prompt, update this list here.
@@ -118,6 +130,7 @@ class ConfigureCommand(BasicCommand):
                 section = profile_to_section(profile)
                 new_values['__section__'] = section
             self._config_writer.update_config(new_values, config_filename)
+        return 0
 
     def _write_out_creds_file_values(self, new_values, profile_name):
         # The access_key/secret_key are now *always* written to the shared

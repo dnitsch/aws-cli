@@ -21,12 +21,14 @@ at the man output, we look one step before at the generated rst output
 (it's easier to verify).
 
 """
+import io
+
 from awscli.testutils import BaseAWSHelpOutputTest
 from awscli.testutils import FileCreator
-from awscli.testutils import mock
 
 from awscli.compat import six
 from awscli.alias import AliasLoader
+import mock
 
 
 class TestHelpOutput(BaseAWSHelpOutputTest):
@@ -203,10 +205,10 @@ class TestRemoveDeprecatedCommands(BaseAWSHelpOutputTest):
         # command verify that we get a SystemExit exception
         # and that we get something in stderr that says that
         # we made an invalid choice (because the operation is removed).
-        stderr = six.StringIO()
+        stderr = io.StringIO()
         with mock.patch('sys.stderr', stderr):
-            with self.assertRaises(SystemExit):
-                self.driver.main([service, command, 'help'])
+            cr = self.driver.main([service, command, 'help'])
+        self.assertEqual(cr, 252)
         # We should see an error message complaining about
         # an invalid choice because the operation has been removed.
         self.assertIn('argument operation: Invalid choice', stderr.getvalue())
@@ -447,13 +449,6 @@ class TestIotData(BaseAWSHelpOutputTest):
         self.assert_contains(
             'The default endpoints (intended for testing purposes only) can be found at '
             'https://docs.aws.amazon.com/general/latest/gr/iot-core.html#iot-core-data-plane-endpoints')
-
-
-class TestSMSVoice(BaseAWSHelpOutputTest):
-    def test_service_help_not_listed(self):
-        self.driver.main(['help'])
-        # Ensure the hidden service is not in the help listing.
-        self.assert_not_contains('* sms-voice')
 
 
 class TestAliases(BaseAWSHelpOutputTest):

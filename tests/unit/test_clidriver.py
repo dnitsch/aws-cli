@@ -11,14 +11,19 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock
+import contextlib
+import platform
+import re
+
 from awscli.testutils import unittest
 from awscli.testutils import BaseAWSCommandParamsTest
 import logging
 import io
-import sys
 
+import mock
+import awscrt.io
 from awscli.compat import six
+from botocore import xform_name
 from botocore.awsrequest import AWSResponse
 from botocore.exceptions import NoCredentialsError
 from botocore.compat import OrderedDict
@@ -29,6 +34,7 @@ from awscli.clidriver import CLIDriver
 from awscli.clidriver import create_clidriver
 from awscli.clidriver import CustomArgument
 from awscli.clidriver import CLICommand
+from awscli.clidriver import construct_cli_error_handlers_chain
 from awscli.clidriver import ServiceCommand
 from awscli.clidriver import ServiceOperation
 from awscli.paramfile import URIArgumentHandler
@@ -36,6 +42,9 @@ from awscli.customizations.commands import BasicCommand
 from awscli import formatter
 from awscli.argparser import HELP_BLURB
 from botocore.hooks import HierarchicalEmitter
+from botocore.configprovider import create_botocore_default_config_mapping
+from botocore.configprovider import ConfigChainFactory
+from botocore.configprovider import ConfigValueStore
 
 
 GET_DATA = {
@@ -98,7 +107,8 @@ GET_DATA = {
 GET_VARIABLE = {
     'provider': 'aws',
     'output': 'json',
-    'api_versions': {}
+    'api_versions': {},
+    'pager': 'less'
 }
 
 
@@ -196,6 +206,14 @@ class FakeSession(object):
         self.stream_logger_args = None
         self.credentials = 'fakecredentials'
         self.session_vars = {}
+        self.config_store = self._register_config_store()
+
+    def _register_config_store(self):
+        chain_builder = ConfigChainFactory(session=self)
+        config_store = ConfigValueStore(
+            mapping=create_botocore_default_config_mapping(chain_builder)
+        )
+        return config_store
 
     def register(self, event_name, handler):
         self.emitter.register(event_name, handler)
@@ -212,6 +230,8 @@ class FakeSession(object):
     def get_component(self, name):
         if name == 'event_emitter':
             return self.emitter
+        if name == 'config_store':
+            return self.config_store
 
     def create_client(self, *args, **kwargs):
         client = mock.Mock()
@@ -249,11 +269,14 @@ class FakeSession(object):
         else:
             self.session_vars[name] = value
 
+    def get_scoped_config(self):
+        return GET_VARIABLE.copy()
+
 
 class FakeCommand(BasicCommand):
     def _run_main(self, args, parsed_globals):
         # We just return success. If this code is reached, it means that
-        # all the logic in the __call__ method has successfully been run.
+        # all the logic in the __call__ method has sucessfully been run.
         # We subclass it here because the default implementation raises
         # an exception and we don't want that behavior.
         return 0
@@ -272,25 +295,23 @@ class FakeCommandVerify(FakeCommand):
 class TestCliDriver(unittest.TestCase):
     def setUp(self):
         self.session = FakeSession()
+        self.session.set_config_variable('cli_auto_prompt', 'off')
+        self.driver = CLIDriver(session=self.session)
 
     def test_session_can_be_passed_in(self):
-        driver = CLIDriver(session=self.session)
-        self.assertEqual(driver.session, self.session)
+        self.assertEqual(self.driver.session, self.session)
 
     def test_paginate_rc(self):
-        driver = CLIDriver(session=self.session)
-        rc = driver.main('s3 list-objects --bucket foo'.split())
+        rc = self.driver.main('s3 list-objects --bucket foo'.split())
         self.assertEqual(rc, 0)
 
     def test_no_profile(self):
-        driver = CLIDriver(session=self.session)
-        driver.main('s3 list-objects --bucket foo'.split())
-        self.assertEqual(driver.session.profile, None)
+        self.driver.main('s3 list-objects --bucket foo'.split())
+        self.assertEqual(self.driver.session.profile, None)
 
     def test_profile(self):
-        driver = CLIDriver(session=self.session)
-        driver.main('s3 list-objects --bucket foo --profile foo'.split())
-        self.assertEqual(driver.session.profile, 'foo')
+        self.driver.main('s3 list-objects --bucket foo --profile foo'.split())
+        self.assertEqual(self.driver.session.profile, 'foo')
 
     def test_region_is_set_for_session(self):
         driver = CLIDriver(session=self.session)
@@ -298,19 +319,18 @@ class TestCliDriver(unittest.TestCase):
         self.assertEqual(
             driver.session.get_config_variable('region'), 'us-east-2')
 
-    def test_error_logger(self):
-        driver = CLIDriver(session=self.session)
-        driver.main('s3 list-objects --bucket foo --profile foo'.split())
+    @mock.patch('awscli.clidriver.set_stream_logger')
+    def test_error_logger(self, set_stream_logger):
+        self.driver.main('s3 list-objects --bucket foo --profile foo'.split())
         expected = {'log_level': logging.ERROR, 'logger_name': 'awscli'}
-        self.assertEqual(driver.session.stream_logger_args[1], expected)
+        set_stream_logger.assert_called_with(**expected)
 
     def test_ctrl_c_is_handled(self):
-        driver = CLIDriver(session=self.session)
         fake_client = mock.Mock()
         fake_client.list_objects.side_effect = KeyboardInterrupt
         fake_client.can_paginate.return_value = False
-        driver.session.create_client = mock.Mock(return_value=fake_client)
-        rc = driver.main('s3 list-objects --bucket foo'.split())
+        self.driver.session.create_client = mock.Mock(return_value=fake_client)
+        rc = self.driver.main('s3 list-objects --bucket foo'.split())
         self.assertEqual(rc, 130)
 
     def test_error_unicode(self):
@@ -322,23 +342,64 @@ class TestCliDriver(unittest.TestCase):
         else:
             stderr = stderr_b = six.StringIO()
             stderr.encoding = "UTF-8"
-        driver = CLIDriver(session=self.session)
         fake_client = mock.Mock()
         fake_client.list_objects.side_effect = Exception(u"☃")
         fake_client.can_paginate.return_value = False
-        driver.session.create_client = mock.Mock(return_value=fake_client)
+        self.driver.session.create_client = mock.Mock(return_value=fake_client)
         with mock.patch("sys.stderr", stderr):
             with mock.patch("locale.getpreferredencoding", lambda: "UTF-8"):
-                rc = driver.main('s3 list-objects --bucket foo'.split())
+                rc = self.driver.main('s3 list-objects --bucket foo'.split())
         stderr.flush()
         self.assertEqual(rc, 255)
         self.assertEqual(stderr_b.getvalue().strip(), u"☃".encode("UTF-8"))
+
+    def test_can_access_subcommand_table(self):
+        table = self.driver.subcommand_table
+        self.assertEqual(list(table), self.session.get_available_services())
+
+    def test_can_access_argument_table(self):
+        arg_table = self.driver.arg_table
+        expected = list(GET_DATA['cli']['options'])
+        self.assertEqual(list(arg_table), expected)
+
+    def test_cli_driver_can_keep_log_handlers(self):
+        fake_stderr = io.StringIO()
+        with contextlib.redirect_stderr(fake_stderr):
+            driver = create_clidriver(['--debug'])
+            rc = driver.main(['ec2', '--debug'])
+        self.assertEqual(rc, 252)
+        self.assertEqual(2, fake_stderr.getvalue().count('CLI version:'))
+
+    def test_cli_driver_can_remove_log_handlers(self):
+        fake_stderr = io.StringIO()
+        with contextlib.redirect_stderr(fake_stderr):
+            driver = create_clidriver(['--debug'])
+            rc = driver.main(['ec2'])
+        self.assertEqual(rc, 252)
+        self.assertEqual(1, fake_stderr.getvalue().count('CLI version:'))
+
+    @mock.patch('awscrt.io.init_logging')
+    def test_debug_enables_crt_logging(self, mock_init_logging):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.driver.main(
+                ['s3', 'list-objects', '--bucket', 'foo', '--debug'])
+        mock_init_logging.assert_called_with(
+            awscrt.io.LogLevel.Debug, 'stderr'
+        )
+
+    @mock.patch('awscrt.io.init_logging')
+    def test_no_debug_disables_crt_logging(self, mock_init_logging):
+        self.driver.main(['s3', 'list-objects', '--bucket', 'foo'])
+        mock_init_logging.assert_called_with(
+            awscrt.io.LogLevel.NoLogs, 'stderr'
+        )
 
 
 class TestCliDriverHooks(unittest.TestCase):
     # These tests verify the proper hooks are emitted in clidriver.
     def setUp(self):
         self.session = FakeSession()
+        self.session.set_config_variable('cli_auto_prompt', 'off')
         self.emitter = mock.Mock()
         self.emitter.emit.return_value = []
         self.stdout = six.StringIO()
@@ -375,6 +436,7 @@ class TestCliDriverHooks(unittest.TestCase):
             'building-command-table.s3',
             'building-argument-table.s3.list-objects',
             'before-building-argument-table-parser.s3.list-objects',
+            'building-command-table.s3_list-objects',
             'operation-args-parsed.s3.list-objects',
             'load-cli-arg.s3.list-objects.bucket',
             'process-cli-arg.s3.list-objects',
@@ -404,13 +466,16 @@ class TestCliDriverHooks(unittest.TestCase):
         ])
 
     def test_unknown_command_suggests_help(self):
-        driver = CLIDriver(session=self.session)
-        # We're catching SystemExit here because this is raised from the bowels
-        # of argparser so short of patching the ArgumentParser's exit() method,
-        # we can just catch SystemExit.
-        with self.assertRaises(SystemExit):
-            # Note the typo in 'list-objects'
-            driver.main('s3 list-objecst --bucket foo --unknown-arg foo'.split())
+        driver = CLIDriver(
+            session=self.session,
+            error_handler=construct_cli_error_handlers_chain()
+        )
+
+        # Note the typo in 'list-objects'
+        rc = driver.main(
+            's3 list-objecst --bucket foo --unknown-arg foo'.split()
+        )
+        self.assertEqual(rc, 252)
         # Tell the user what went wrong.
         self.assertIn("Invalid choice: 'list-objecst'", self.stderr.getvalue())
         # Offer the user a suggestion.
@@ -418,16 +483,10 @@ class TestCliDriverHooks(unittest.TestCase):
 
 
 class TestSearchPath(unittest.TestCase):
-    def tearDown(self):
-        six.moves.reload_module(awscli)
-
     @mock.patch('os.pathsep', ';')
     @mock.patch('os.environ', {'AWS_DATA_PATH': 'c:\\foo;c:\\bar'})
     def test_windows_style_search_path(self):
         driver = CLIDriver()
-        # Because the os.environ patching happens at import time,
-        # we have to force a reimport of the module to test our changes.
-        six.moves.reload_module(awscli)
         # Our two overrides should be the last two elements in the search path.
         search_paths = driver.session.get_component(
             'data_loader').search_paths
@@ -450,10 +509,6 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
 
     def inject_new_param(self, argument_table, **kwargs):
         argument = CustomArgument('unknown-arg', {})
-        argument.add_to_arg_table(argument_table)
-
-    def inject_new_param_no_paramfile(self, argument_table, **kwargs):
-        argument = CustomArgument('unknown-arg', no_paramfile=True)
         argument.add_to_arg_table(argument_table)
 
     def inject_command(self, command_table, session, **kwargs):
@@ -493,9 +548,9 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
 
     def test_event_emission_for_top_level_params(self):
         driver = create_clidriver()
-        # --unknown-foo is an known arg, so we expect a 255 rc.
+        # --unknown-foo is an unknown arg, so we expect a 252 rc.
         rc = driver.main('ec2 describe-instances --unknown-arg foo'.split())
-        self.assertEqual(rc, 255)
+        self.assertEqual(rc, 252)
         self.assertIn('Unknown options: --unknown-arg', self.stderr.getvalue())
 
         # The argument table is memoized in the CLIDriver object. So
@@ -575,17 +630,6 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
             value='file:///foo',
         )
 
-    def test_custom_arg_no_paramfile(self):
-        driver = create_clidriver()
-        driver.session.register(
-            'building-argument-table', self.inject_new_param_no_paramfile)
-
-        self.patch_make_request()
-        rc = driver.main(
-            'ec2 describe-instances --unknown-arg file:///foo'.split())
-
-        self.assertEqual(rc, 0)
-
     def test_custom_command_schema(self):
         driver = create_clidriver()
         driver.session.register(
@@ -609,13 +653,13 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
         rc = driver.main(
             'ec2 foo --bar Count=4'.split())
 
-        self.assertEqual(rc, 255)
+        self.assertEqual(rc, 252)
 
         # Test extra unknown shorthand item
         rc = driver.main(
             'ec2 foo --bar Name=test,Unknown='.split())
 
-        self.assertEqual(rc, 255)
+        self.assertEqual(rc, 252)
 
         # Test long form JSON
         rc = driver.main(
@@ -627,7 +671,7 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
         rc = driver.main(
             'ec2 foo --bar {"Name":"test",Count:4}'.split())
 
-        self.assertEqual(rc, 255)
+        self.assertEqual(rc, 252)
 
     def test_empty_params_gracefully_handled(self):
         # Simulates the equivalent in bash: --identifies ""
@@ -639,7 +683,7 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
         driver = create_clidriver()
         rc = driver.main('ec2 describe-instances '
                          '--filters file://does/not/exist.json'.split())
-        self.assertEqual(rc, 255)
+        self.assertEqual(rc, 252)
         error_msg = self.stderr.getvalue()
         self.assertIn("Error parsing parameter '--filters': "
                       "Unable to load paramfile file://does/not/exist.json",
@@ -657,7 +701,7 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
         with mock.patch('sys.stderr') as f:
             driver.main('ec2 describe-instances'.split())
         self.assertEqual(
-            f.write.call_args_list[0][0][0],
+            f.write.call_args_list[1][0][0],
             'Unable to locate credentials. '
             'You can configure credentials by running "aws configure".')
 
@@ -672,7 +716,7 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
 
         self.driver.session.register('calling-command', override_with_rc)
         rc = self.driver.main('ec2 describe-instances'.split())
-        # Check that the overridden rc is as expected.
+        # Check that the overriden rc is as expected.
         self.assertEqual(rc, 20)
 
     def test_override_calling_command_error(self):
@@ -690,29 +734,59 @@ class TestAWSCommand(BaseAWSCommandParamsTest):
         self.assertEqual(rc, 255)
 
     def test_help_blurb_in_error_message(self):
-        with self.assertRaises(SystemExit):
-            self.driver.main([])
+        rc = self.driver.main([])
+        self.assertEqual(rc, 252)
         self.assertIn(HELP_BLURB, self.stderr.getvalue())
 
     def test_help_blurb_in_service_error_message(self):
-        with self.assertRaises(SystemExit):
-            self.driver.main(['ec2'])
+        rc = self.driver.main(['ec2'])
+        self.assertEqual(rc, 252)
         self.assertIn(HELP_BLURB, self.stderr.getvalue())
 
     def test_help_blurb_in_operation_error_message(self):
-        with self.assertRaises(SystemExit):
-            self.driver.main(['s3api', 'list-objects'])
+        rc = self.driver.main(['s3api', 'list-objects'])
+        self.assertEqual(rc, 252)
         self.assertIn(HELP_BLURB, self.stderr.getvalue())
 
     def test_help_blurb_in_unknown_argument_error_message(self):
-        with self.assertRaises(SystemExit):
-            self.driver.main(['s3api', 'list-objects', '--help'])
+        args = ['s3api', 'list-objects', '--help']
+        driver = create_clidriver(args)
+        rc = driver.main(args)
+        self.assertEqual(rc, 252)
         self.assertIn(HELP_BLURB, self.stderr.getvalue())
 
     def test_idempotency_token_is_not_required_in_help_text(self):
-        with self.assertRaises(SystemExit):
-            self.driver.main(['servicecatalog', 'create-constraint'])
+        rc = self.driver.main(['servicecatalog', 'create-constraint'])
+        self.assertEqual(rc, 252)
         self.assertNotIn('--idempotency-token', self.stderr.getvalue())
+
+    @mock.patch('awscli.clidriver.platform.system', return_value='Linux')
+    @mock.patch('awscli.clidriver.platform.machine', return_value='x86_64')
+    @mock.patch('awscli.clidriver.distro.id', return_value='amzn')
+    @mock.patch('awscli.clidriver.distro.major_version', return_value='1')
+    def test_user_agent_for_linux(self, *args):
+        driver = create_clidriver()
+        expected_user_agent = 'source/x86_64.amzn.1'
+        self.assertEqual(expected_user_agent,
+                         driver.session.user_agent_extra)
+
+    def test_user_agent(self, *args):
+        machine = platform.machine()
+        driver = create_clidriver()
+        user_agent_extra_pattern = re.compile(
+            fr'^source/{machine}(\.[a-z_]+)?(\.[0-9]+)?$'
+        )
+        self.assertIsNotNone(user_agent_extra_pattern.match(
+            driver.session.user_agent_extra))
+        # check that distro didn't fail
+        self.assertFalse('unknown' in driver.session.user_agent_extra)
+
+    @mock.patch('awscli.clidriver.platform.system', return_value='Linux')
+    @mock.patch('awscli.clidriver.distro.id', side_effect=Exception())
+    def test_user_agent_handles_distro_exception(self, *args):
+        driver = create_clidriver()
+        self.assertTrue('unknown' in driver.session.user_agent_extra)
+
 
 class TestHowClientIsCreated(BaseAWSCommandParamsTest):
     def setUp(self):
@@ -746,6 +820,15 @@ class TestHowClientIsCreated(BaseAWSCommandParamsTest):
             expected_rc=0)
         self.assertEqual(
             self.create_endpoint.call_args[1]['region_name'], 'us-west-2')
+
+    def test_can_use_new_aws_region_env_var(self):
+        self.environ['AWS_REGION'] = 'us-east-2'
+        self.environ['AWS_DEFAULT_REGION'] = 'us-west-1'
+        self.assert_params_for_cmd(
+            'ec2 describe-instances',
+            expected_rc=0)
+        self.assertEqual(
+            self.create_endpoint.call_args[1]['region_name'], 'us-east-2')
 
     def test_aws_with_verify_false(self):
         self.assert_params_for_cmd(
@@ -803,29 +886,6 @@ class TestHowClientIsCreated(BaseAWSCommandParamsTest):
         self.assertEqual(call_args[1]['timeout'], (90, 70))
 
 
-class TestHTTPParamFileDoesNotExist(BaseAWSCommandParamsTest):
-
-    def setUp(self):
-        super(TestHTTPParamFileDoesNotExist, self).setUp()
-        self.stderr = six.StringIO()
-        self.stderr_patch = mock.patch('sys.stderr', self.stderr)
-        self.stderr_patch.start()
-
-    def tearDown(self):
-        super(TestHTTPParamFileDoesNotExist, self).tearDown()
-        self.stderr_patch.stop()
-
-    def test_http_file_param_does_not_exist(self):
-        error_msg = ("Error parsing parameter '--filters': "
-                     "Unable to retrieve http://does/not/exist.json: "
-                     "received non 200 status code of 404")
-        with mock.patch('awscli.paramfile.URLLib3Session.send') as get:
-            get.return_value.status_code = 404
-            self.assert_params_for_cmd(
-                'ec2 describe-instances --filters http://does/not/exist.json',
-                expected_rc=255, stderr_contains=error_msg)
-
-
 class TestVerifyArgument(BaseAWSCommandParamsTest):
     def setUp(self):
         super(TestVerifyArgument, self).setUp()
@@ -877,6 +937,17 @@ class TestServiceCommand(unittest.TestCase):
         self.session = FakeSession()
         self.cmd = ServiceCommand(self.name, self.session)
 
+    def test_can_access_subcommand_table(self):
+        table = self.cmd.subcommand_table
+        expected = [
+            xform_name(op, '-') for op in
+            self.session.get_service_model(self.name).operation_names
+        ]
+        self.assertEqual(set(table), set(expected))
+
+    def test_can_access_arg_table(self):
+        self.assertEqual(self.cmd.arg_table, {})
+
     def test_name(self):
         self.assertEqual(self.cmd.name, self.name)
         self.cmd.name = 'bar'
@@ -913,11 +984,20 @@ class TestServiceCommand(unittest.TestCase):
 
 class TestServiceOperation(unittest.TestCase):
     def setUp(self):
-        self.name = 'foo'
-        operation = mock.Mock(spec=botocore.model.OperationModel)
-        operation.deprecated = False
+        self.name = 'list-objects'
+        self.session = FakeSession()
+        operation = self.session.get_service_model(
+            's3').operation_model('ListObjects')
         self.mock_operation = operation
-        self.cmd = ServiceOperation(self.name, None, None, operation, None)
+        self.cmd = ServiceOperation(self.name, None, None, operation,
+                                    self.session)
+
+    def test_can_access_subcommand_table(self):
+        self.assertEqual(self.cmd.subcommand_table, {})
+
+    def test_can_access_arg_table(self):
+        self.assertEqual(set(self.cmd.arg_table),
+                         set(['bucket', 'marker', 'max-keys']))
 
     def test_name(self):
         self.assertEqual(self.cmd.name, self.name)
@@ -931,7 +1011,7 @@ class TestServiceOperation(unittest.TestCase):
         self.assertEqual(self.cmd.lineage, [cmd])
 
     def test_lineage_names(self):
-        self.assertEqual(self.cmd.lineage_names, ['foo'])
+        self.assertEqual(self.cmd.lineage_names, ['list-objects'])
 
     def test_deprecated_operation(self):
         self.mock_operation.deprecated = True
@@ -949,6 +1029,114 @@ class TestServiceOperation(unittest.TestCase):
         token_argument = arg_table.get('token')
         self.assertFalse(token_argument.required,
                          'Idempotency tokens should not be required')
+
+
+class TestAWSCLIEntryPoint(unittest.TestCase):
+
+    def setUp(self):
+        self.driver = mock.Mock()
+
+        def _create_fake_cli_driver(*args):
+            self.driver.session.user_agent_extra = ''
+            return self.driver
+
+        self.prompt_patch = mock.patch('awscli.clidriver.AutoPromptDriver')
+        self.crete_driver_patch = mock.patch(
+            'awscli.clidriver.create_clidriver')
+        prompt_driver_class = self.prompt_patch.start()
+        self.create_clidriver = self.crete_driver_patch.start()
+        self.create_clidriver.side_effect = _create_fake_cli_driver
+        self.prompt_driver = mock.Mock()
+        prompt_driver_class.return_value = self.prompt_driver
+
+    def tearDown(self):
+        self.prompt_patch.stop()
+        self.crete_driver_patch.stop()
+
+    def test_recreate_driver_in_partial_mode_on_param_err(self):
+        self.prompt_driver.resolve_mode.return_value = 'on-partial'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        rc = entry_point.main([])
+        self.assertEqual(self.create_clidriver.call_count, 2)
+        self.assertEqual(rc, 252)
+
+    def test_not_recreate_driver_in_partial_mode_on_success(self):
+        self.prompt_driver.resolve_mode.return_value = 'on-partial'
+        self.driver.main.return_value = 0
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        rc = entry_point.main([])
+        self.assertEqual(self.create_clidriver.call_count, 1)
+        self.assertEqual(rc, 0)
+
+    def test_not_recreate_driver_in_on_mode(self):
+        self.prompt_driver.resolve_mode.return_value = 'on'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        rc = entry_point.main([])
+        self.assertEqual(self.create_clidriver.call_count, 1)
+        self.assertEqual(rc, 252)
+
+    def test_not_recreate_driver_in_off_mode(self):
+        self.prompt_driver.resolve_mode.return_value = 'off'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        rc = entry_point.main([])
+        self.assertEqual(self.create_clidriver.call_count, 1)
+        self.assertEqual(rc, 252)
+
+    def test_handle_exception_in_main(self):
+        self.prompt_driver.resolve_mode.return_value = 'on'
+        self.prompt_driver.prompt_for_args.side_effect = Exception('error')
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        fake_stderr = io.StringIO()
+        with contextlib.redirect_stderr(fake_stderr):
+            rc = entry_point.main([])
+        self.assertEqual(rc, 255)
+        self.assertIn('error', fake_stderr.getvalue())
+
+    def test_update_user_agent_in_on_mode(self):
+        self.prompt_driver.resolve_mode.return_value = 'on'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        entry_point.main([])
+        self.assertEqual(self.driver.session.user_agent_extra, ' prompt/on')
+
+    def test_not_update_user_agent_in_off_mode(self):
+        self.prompt_driver.resolve_mode.return_value = 'off'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        entry_point.main([])
+        self.assertEqual(self.driver.session.user_agent_extra, ' prompt/off')
+
+    def test_update_user_agent_in_partial_mode_on_param_err(self):
+        self.prompt_driver.resolve_mode.return_value = 'on-partial'
+        self.driver.main.return_value = 252
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        entry_point.main([])
+        self.assertEqual(self.driver.session.user_agent_extra,
+                         ' prompt/partial')
+
+    def test_not_update_user_agent_in_partial_mode_on_success(self):
+        self.prompt_driver.resolve_mode.return_value = 'on-partial'
+        self.driver.main.return_value = 0
+        entry_point = awscli.clidriver.AWSCLIEntryPoint()
+        entry_point.main([])
+        self.assertEqual(self.driver.session.user_agent_extra, ' prompt/off')
+
+
+class TextCreateCLIDriver(unittest.TestCase):
+    def test_create_cli_driver_parse_args(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            driver = create_clidriver(['--debug'])
+        self.assertIn('CLI version', stderr.getvalue())
+
+    def test_create_cli_driver_wo_args(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            driver = create_clidriver()
+        self.assertIn('', stderr.getvalue())
 
 
 if __name__ == '__main__':

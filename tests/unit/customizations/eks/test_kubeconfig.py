@@ -13,11 +13,12 @@
 
 import glob
 import os
+import mock
 import tempfile
 import shutil
 from botocore.compat import OrderedDict
 
-from awscli.testutils import mock, unittest, skip_if_windows
+from awscli.testutils import unittest, skip_if_windows
 from awscli.customizations.utils import uni_print
 from awscli.customizations.eks.kubeconfig import (KubeconfigError,
                                                   KubeconfigInaccessableError,
@@ -93,7 +94,7 @@ class TestKubeconfig(unittest.TestCase):
 
 class TestKubeconfigWriter(unittest.TestCase):
 
-    @skip_if_windows('Windows does not support such permissions set up')
+    @skip_if_windows('Read permissions tests only supported on mac/linux')
     def test_not_world_readable(self):
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmpdir)

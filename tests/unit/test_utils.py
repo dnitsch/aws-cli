@@ -14,17 +14,28 @@ import signal
 import platform
 import pytest
 import subprocess
+import json
 import os
+import shlex
 
+import botocore
 import botocore.model
-
+import botocore.session as session
+from botocore.exceptions import ConnectionClosedError
+from awscli.clidriver import create_clidriver
 from awscli.testutils import unittest, skip_if_windows, mock
+from awscli.compat import is_windows
 from awscli.utils import (
     split_on_commas, ignore_ctrl_c, find_service_and_method_in_event_name,
     is_document_type, is_document_type_container, is_streaming_blob_type,
-    is_tagged_union_type, operation_uses_document_types, ShapeWalker,
-    ShapeRecordingVisitor, OutputStreamFactory
+    is_tagged_union_type, operation_uses_document_types, dump_yaml_to_str,
+    ShapeWalker, ShapeRecordingVisitor, OutputStreamFactory, LazyPager
 )
+from awscli.utils import InstanceMetadataRegionFetcher
+from awscli.utils import IMDSRegionProvider
+from tests import RawResponse
+
+import ruamel.yaml
 
 
 @pytest.fixture()
@@ -67,7 +78,7 @@ class TestCSVSplit(unittest.TestCase):
                          ['foo', 'bar=BAR', 'baz'])
 
     def test_escape_quotes(self):
-        self.assertEqual(split_on_commas('foo,bar=1\,2\,3,baz'),
+        self.assertEqual(split_on_commas(r'foo,bar=1\,2\,3,baz'),
                          ['foo', 'bar=1,2,3', 'baz'])
 
     def test_no_commas(self):
@@ -112,7 +123,7 @@ class TestIgnoreCtrlC(unittest.TestCase):
             # Should have the noop signal handler installed.
             self.assertEqual(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
             # And if we actually try to sigint ourselves, an exception
-            # should not propagate.
+            # should not propogate.
             os.kill(os.getpid(), signal.SIGINT)
 
 
@@ -144,76 +155,434 @@ class MockProcess(object):
         pass
 
 
+class PopenException(Exception):
+    pass
+
+
 class TestOutputStreamFactory(unittest.TestCase):
     def setUp(self):
+        self.session = mock.Mock(session.Session)
         self.popen = mock.Mock(subprocess.Popen)
-        self.stream_factory = OutputStreamFactory(self.popen)
+        self.environ = {}
+        self.stream_factory = OutputStreamFactory(
+            session=self.session, popen=self.popen,
+            environ=self.environ,
+        )
+        self.pager = 'mypager --option'
+        self.set_session_pager(self.pager)
+        self.patch_tty = mock.patch('awscli.utils.is_a_tty')
+        self.mock_is_a_tty = self.patch_tty.start()
+        self.mock_is_a_tty.return_value = True
 
-    @mock.patch('awscli.utils.get_popen_kwargs_for_pager_cmd')
-    def test_pager(self, mock_get_popen_pager):
-        mock_get_popen_pager.return_value = {
-                'args': ['mypager', '--option']
+    def tearDown(self):
+        self.patch_tty.stop()
+
+    def set_session_pager(self, pager):
+        self.session.get_component.return_value.\
+            get_config_variable.return_value = pager
+
+    def assert_popen_call(self, expected_pager_cmd, **override_args):
+        popen_kwargs = {
+            'stdin': subprocess.PIPE,
+            'env': mock.ANY,
+            'universal_newlines': True
         }
-        with self.stream_factory.get_pager_stream():
-            mock_get_popen_pager.assert_called_with(None)
-            self.assertEqual(
-                self.popen.call_args_list,
-                [mock.call(
-                    args=['mypager', '--option'],
-                    stdin=subprocess.PIPE)]
+        if is_windows:
+            popen_kwargs['args'] = expected_pager_cmd
+            popen_kwargs['shell'] = True
+        else:
+            popen_kwargs['args'] = shlex.split(expected_pager_cmd)
+        popen_kwargs.update(override_args)
+        self.popen.assert_called_with(**popen_kwargs)
+
+    def test_pager(self):
+        self.set_session_pager('mypager --option')
+        with self.stream_factory.get_pager_stream() as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='mypager --option'
             )
 
-    @mock.patch('awscli.utils.get_popen_kwargs_for_pager_cmd')
-    def test_env_configured_pager(self, mock_get_popen_pager):
-        mock_get_popen_pager.return_value = {
-            'args': ['mypager', '--option']
-        }
-        with self.stream_factory.get_pager_stream('mypager --option'):
-            mock_get_popen_pager.assert_called_with('mypager --option')
-            self.assertEqual(
-                self.popen.call_args_list,
-                [mock.call(
-                    args=['mypager', '--option'],
-                    stdin=subprocess.PIPE)]
-            )
-
-    @mock.patch('awscli.utils.get_popen_kwargs_for_pager_cmd')
-    def test_pager_using_shell(self, mock_get_popen_pager):
-        mock_get_popen_pager.return_value = {
-            'args': 'mypager --option', 'shell': True
-        }
-        with self.stream_factory.get_pager_stream():
-            mock_get_popen_pager.assert_called_with(None)
-            self.assertEqual(
-                self.popen.call_args_list,
-                [mock.call(
-                    args='mypager --option',
-                    stdin=subprocess.PIPE,
-                    shell=True)]
+    def test_explicit_pager(self):
+        self.set_session_pager('sessionpager --option')
+        with self.stream_factory.get_pager_stream('mypager --option') as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='mypager --option'
             )
 
     def test_exit_of_context_manager_for_pager(self):
-        with self.stream_factory.get_pager_stream():
-            pass
+        self.set_session_pager('mypager --option')
+        with self.stream_factory.get_pager_stream() as stream:
+            stream.write()
         returned_process = self.popen.return_value
         self.assertTrue(returned_process.communicate.called)
 
-    @mock.patch('awscli.utils.get_binary_stdout')
-    def test_stdout(self, mock_binary_out):
-        with self.stream_factory.get_stdout_stream():
-            self.assertTrue(mock_binary_out.called)
+    def test_propagates_exception_from_popen(self):
+        self.popen.side_effect = PopenException
+        with self.assertRaises(PopenException):
+            with self.stream_factory.get_pager_stream() as stream:
+                stream.write()
+
+    @mock.patch('awscli.utils.get_stdout_text_writer')
+    def test_stdout(self, mock_stdout_writer):
+        with self.stream_factory.get_stdout_stream() as stream:
+            stream.write()
+            self.assertTrue(mock_stdout_writer.called)
 
     def test_can_silence_io_error_from_pager(self):
         self.popen.return_value = MockProcess()
         try:
-            # RuntimeError is caught here since a runtime error is raised
-            # when an IOError is raised before the context manager yields.
-            # If we ignore it like this we will actually see the IOError.
-            with self.assertRaises(RuntimeError):
-                with self.stream_factory.get_pager_stream():
-                    pass
+            with self.stream_factory.get_pager_stream() as stream:
+                stream.write()
         except IOError:
             self.fail('Should not raise IOError')
+
+    def test_get_output_stream(self):
+        self.set_session_pager('mypager --option')
+        with self.stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='mypager --option'
+            )
+
+    @mock.patch('awscli.utils.get_stdout_text_writer')
+    def test_use_stdout_if_not_tty(self, mock_stdout_writer):
+        self.mock_is_a_tty.return_value = False
+        with self.stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assertTrue(mock_stdout_writer.called)
+
+    @mock.patch('awscli.utils.get_stdout_text_writer')
+    def test_use_stdout_if_pager_set_to_empty_string(self, mock_stdout_writer):
+        self.set_session_pager('')
+        with self.stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assertTrue(mock_stdout_writer.called)
+
+    def test_adds_default_less_env_vars(self):
+        self.set_session_pager('myless')
+        with self.stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='myless',
+                env={'LESS': 'FRX'}
+            )
+
+    def test_does_not_clobber_less_env_var_if_in_env_vars(self):
+        self.set_session_pager('less')
+        self.environ['LESS'] = 'S'
+        with self.stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='less',
+                env={'LESS': 'S'}
+            )
+
+    def test_set_less_flags_through_constructor(self):
+        self.set_session_pager('less')
+        stream_factory = OutputStreamFactory(
+            self.session, self.popen, self.environ, default_less_flags='ABC')
+        with stream_factory.get_output_stream() as stream:
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='less',
+                env={'LESS': 'ABC'}
+            )
+
+    def test_not_create_pager_process_if_not_called(self):
+        self.set_session_pager('sessionpager --option')
+        with self.stream_factory.get_pager_stream('mypager --option'):
+            self.assertEqual(self.popen.call_count, 0)
+
+    def test_create_process_on_stdin_method_call(self):
+        self.set_session_pager('less')
+        stream_factory = OutputStreamFactory(
+            self.session, self.popen, self.environ, default_less_flags='ABC')
+        with stream_factory.get_output_stream() as stream:
+            self.assertEqual(self.popen.call_count, 0)
+            stream.write()
+            self.assert_popen_call(
+                expected_pager_cmd='less',
+                env={'LESS': 'ABC'}
+            )
+
+    def test_not_create_process_if_stream_not_created(self):
+        self.set_session_pager('less')
+        stream_factory = OutputStreamFactory(
+            self.session, self.popen, self.environ, default_less_flags='ABC')
+        with stream_factory.get_output_stream():
+            self.assertEqual(self.popen.call_count, 0)
+        self.assertEqual(self.popen.call_count, 0)
+
+
+class TestInstanceMetadataRegionFetcher(unittest.TestCase):
+    def setUp(self):
+        urllib3_session_send = 'botocore.httpsession.URLLib3Session.send'
+        self._urllib3_patch = mock.patch(urllib3_session_send)
+        self._send = self._urllib3_patch.start()
+        self._imds_responses = []
+        self._send.side_effect = self.get_imds_response
+        self._region = 'us-mars-1a'
+
+    def tearDown(self):
+        self._urllib3_patch.stop()
+
+    def add_imds_response(self, body, status_code=200):
+        response = botocore.awsrequest.AWSResponse(
+            url='http://169.254.169.254/',
+            status_code=status_code,
+            headers={},
+            raw=RawResponse(body)
+        )
+        self._imds_responses.append(response)
+
+    def add_get_region_imds_response(self, region=None):
+        if region is None:
+            region = self._region
+        self.add_imds_response(body=region.encode('utf-8'))
+
+    def add_imds_token_response(self):
+        self.add_imds_response(status_code=200, body=b'token')
+
+    def add_imds_connection_error(self, exception):
+        self._imds_responses.append(exception)
+
+    def get_imds_response(self, request):
+        response = self._imds_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def test_disabled_by_environment(self):
+        env = {'AWS_EC2_METADATA_DISABLED': 'true'}
+        fetcher = InstanceMetadataRegionFetcher(env=env)
+        result = fetcher.retrieve_region()
+        self.assertIsNone(result)
+        self._send.assert_not_called()
+
+    def test_disabled_by_environment_mixed_case(self):
+        env = {'AWS_EC2_METADATA_DISABLED': 'tRuE'}
+        fetcher = InstanceMetadataRegionFetcher(env=env)
+        result = fetcher.retrieve_region()
+        self.assertIsNone(result)
+        self._send.assert_not_called()
+
+    def test_disabling_env_var_not_true(self):
+        url = 'https://example.com/'
+        env = {'AWS_EC2_METADATA_DISABLED': 'false'}
+
+        self.add_imds_token_response()
+        self.add_get_region_imds_response()
+
+        fetcher = InstanceMetadataRegionFetcher(base_url=url, env=env)
+        result = fetcher.retrieve_region()
+
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_includes_user_agent_header(self):
+        user_agent = 'my-user-agent'
+        self.add_imds_token_response()
+        self.add_get_region_imds_response()
+
+        InstanceMetadataRegionFetcher(
+            user_agent=user_agent).retrieve_region()
+
+        headers = self._send.call_args[0][0].headers
+        self.assertEqual(headers['User-Agent'], user_agent)
+
+    def test_non_200_response_for_region_is_retried(self):
+        # Response for role name that have a non 200 status code should
+        # be retried.
+        self.add_imds_token_response()
+        self.add_imds_response(
+            status_code=429, body=b'{"message": "Slow down"}')
+        self.add_get_region_imds_response()
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=2).retrieve_region()
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_empty_response_for_region_is_retried(self):
+        # Response for role name that have a non 200 status code should
+        # be retried.
+        self.add_imds_response(body=b'')
+        self.add_get_region_imds_response()
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=2).retrieve_region()
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_non_200_response_is_retried(self):
+        # Response for creds that has a 200 status code but has an empty
+        # body should be retried.
+        self.add_imds_token_response()
+        self.add_imds_response(
+            status_code=429, body=b'{"message": "Slow down"}')
+        self.add_get_region_imds_response()
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=2).retrieve_region()
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_http_connection_errors_is_retried(self):
+        # Connection related errors should be retried
+        self.add_imds_token_response()
+        self.add_imds_connection_error(ConnectionClosedError(endpoint_url=''))
+        self.add_get_region_imds_response()
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=2).retrieve_region()
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_empty_response_is_retried(self):
+        # Response for creds that has a 200 status code but is empty.
+        # This should be retried.
+        self.add_imds_response(body=b'')
+        self.add_get_region_imds_response()
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=2).retrieve_region()
+        expected_result = 'us-mars-1'
+        self.assertEqual(result, expected_result)
+
+    def test_exhaust_retries_on_region_request(self):
+        self.add_imds_token_response()
+        self.add_imds_response(status_code=400, body=b'')
+        result = InstanceMetadataRegionFetcher(
+            num_attempts=1).retrieve_region()
+        self.assertEqual(result, None)
+
+
+class TestIMDSRegionProvider(unittest.TestCase):
+    def setUp(self):
+        self.environ = {}
+        self.environ_patch = mock.patch('os.environ', self.environ)
+        self.environ_patch.start()
+
+    def tearDown(self):
+        self.environ_patch.stop()
+
+    def assert_does_provide_expected_value(self, fetcher_region=None,
+                                           expected_result=None,):
+        fake_session = mock.Mock(spec=session.Session)
+        fake_fetcher = mock.Mock(spec=InstanceMetadataRegionFetcher)
+        fake_fetcher.retrieve_region.return_value = fetcher_region
+        provider = IMDSRegionProvider(fake_session, fetcher=fake_fetcher)
+        value = provider.provide()
+        self.assertEqual(value, expected_result)
+
+    def test_does_provide_region_when_present(self):
+        self.assert_does_provide_expected_value(
+            fetcher_region='us-mars-2',
+            expected_result='us-mars-2',
+        )
+
+    def test_does_provide_none(self):
+        self.assert_does_provide_expected_value(
+            fetcher_region=None,
+            expected_result=None,
+        )
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_use_truncated_user_agent(self, send):
+        driver = create_clidriver()
+        driver.session.user_agent_version = '3.0'
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertEqual(args[0].headers['User-Agent'], 'aws-cli/3.0')
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_can_use_ipv6(self, send):
+        driver = create_clidriver()
+        driver.session.set_config_variable('imds_use_ipv6', True)
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('[fd00:ec2::254]', args[0].url)
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_use_ipv4_by_default(self, send):
+        driver = create_clidriver()
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('169.254.169.254', args[0].url)
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_can_set_imds_endpoint_mode_to_ipv4(self, send):
+        driver = create_clidriver()
+        driver.session.set_config_variable(
+            'ec2_metadata_service_endpoint_mode', 'ipv4')
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('169.254.169.254', args[0].url)
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_can_set_imds_endpoint_mode_to_ipv6(self, send):
+        driver = create_clidriver()
+        driver.session.set_config_variable(
+            'ec2_metadata_service_endpoint_mode', 'ipv6')
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('[fd00:ec2::254]', args[0].url)
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_can_set_imds_service_endpoint(self, send):
+        driver = create_clidriver()
+        driver.session.set_config_variable(
+            'ec2_metadata_service_endpoint', 'http://myendpoint/')
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('http://myendpoint/', args[0].url)
+
+    @mock.patch('botocore.httpsession.URLLib3Session.send')
+    def test_imds_service_endpoint_overrides_ipv6_endpoint(self, send):
+        driver = create_clidriver()
+        driver.session.set_config_variable(
+            'ec2_metadata_service_endpoint_mode', 'ipv6')
+        driver.session.set_config_variable(
+            'ec2_metadata_service_endpoint', 'http://myendpoint/')
+        provider = IMDSRegionProvider(driver.session)
+        provider.provide()
+        args, _ = send.call_args
+        self.assertIn('http://myendpoint/', args[0].url)
+
+
+class TestLazyPager(unittest.TestCase):
+    def setUp(self):
+        self.popen = mock.Mock(subprocess.Popen)
+        self.pager = LazyPager(self.popen)
+
+    def test_lazy_pager_process_not_created_on_communicate_call_wo_args(self):
+        stdout, stderr = self.pager.communicate()
+        self.assertEqual(self.popen.call_count, 0)
+        self.assertIsNone(stdout)
+        self.assertIsNone(stderr)
+
+    def test_lazy_pager_process_not_created_on_stdin_flush(self):
+        self.pager.stdin.flush()
+        self.assertEqual(self.popen.call_count, 0)
+
+    def test_lazy_pager_popen_communicate_calls_on_call_with_args(self):
+        process = mock.Mock(subprocess.Popen)
+        self.popen.return_value = process
+        pager = LazyPager(self.popen)
+        pager.communicate(timeout=20)
+        self.assertEqual(self.popen.call_count, 1)
+        process.communicate.assert_called_with(timeout=20)
+
+    def test_lazy_pager_popen_calls_on_stdin_call(self):
+        self.pager.stdin.foo()
+        self.assertEqual(self.popen.call_count, 1)
+
+    def test_lazy_pager_popen_calls_on_process_call(self):
+        self.pager.foo()
+        self.assertEqual(self.popen.call_count, 1)
 
 
 class BaseShapeTest(unittest.TestCase):
@@ -357,6 +726,18 @@ class TestOperationUsesDocumentTypes(BaseShapeTest):
         self.assertFalse(operation_uses_document_types(self.operation_model))
 
 
+class TestDumpYamlToStr(unittest.TestCase):
+    def setUp(self):
+        self.yaml = ruamel.yaml.YAML(typ="safe", pure=True)
+        self.yaml.representer.default_flow_style = False
+
+    def test_dump_to_str(self):
+        obj = {'A': 1, 'parameter': "something"}
+        expected_result = "A: 1\nparameter: something\n"
+        result = dump_yaml_to_str(self.yaml, obj)
+        self.assertEqual(result, expected_result)
+
+
 class TestShapeWalker(BaseShapeTest):
     def setUp(self):
         super(TestShapeWalker, self).setUp()
@@ -440,6 +821,6 @@ class TestTaggedUnion:
     def test_shape_is_tagged_union(self, argument_model):
         setattr(argument_model, 'is_tagged_union', True)
         assert is_tagged_union_type(argument_model)
-    
+
     def test_shape_is_not_tagged_union(self, argument_model):
         assert not is_tagged_union_type(argument_model)

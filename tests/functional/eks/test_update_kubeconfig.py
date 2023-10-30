@@ -10,29 +10,28 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-
 import os
-import sys
-import glob
-import yaml
-import logging
-import botocore
-import tempfile
-import shutil
 import re
-from argparse import Namespace
+import shutil
+import sys
+import tempfile
 
+import mock
 from botocore.session import get_session
+from mock import patch, Mock
 
-from awscli.testutils import mock, unittest, capture_output
-from awscli.customizations.eks.update_kubeconfig import UpdateKubeconfigCommand
 from awscli.customizations.eks.exceptions import EKSClusterError
-from awscli.customizations.eks.kubeconfig import (Kubeconfig,
-                                                  KubeconfigCorruptedError,
-                                                  KubeconfigInaccessableError)
-from tests.functional.eks.test_util import (describe_cluster_response,
-                                            describe_cluster_creating_response,
-                                            get_testdata)
+from awscli.customizations.eks.kubeconfig import (
+    KubeconfigCorruptedError,
+    KubeconfigInaccessableError
+)
+from awscli.customizations.eks.update_kubeconfig import UpdateKubeconfigCommand
+from awscli.testutils import unittest, capture_output
+from tests.functional.eks.test_util import (
+    describe_cluster_response,
+    describe_cluster_creating_response,
+    get_testdata
+)
 
 def sanitize_output(output):
     """
@@ -55,14 +54,14 @@ def build_environment(entries):
 
 class TestUpdateKubeconfig(unittest.TestCase):
     def setUp(self):
-        self.create_client_patch = mock.patch(
+        self.create_client_patch = patch(
             'botocore.session.Session.create_client'
         )
 
         self.mock_create_client = self.create_client_patch.start()
         self.session = get_session()
 
-        self.client = mock.Mock()
+        self.client = Mock()
         self.client.describe_cluster.return_value = describe_cluster_response()
         self.mock_create_client.return_value = self.client
 
@@ -403,7 +402,7 @@ class TestUpdateKubeconfig(unittest.TestCase):
         passed = "output_combined"
         environment = []
         self.client.describe_cluster =\
-            mock.Mock(return_value=describe_cluster_creating_response())
+            Mock(return_value=describe_cluster_creating_response())
         with self.assertRaises(EKSClusterError):
             self.assert_cmd(configs, passed, environment)
 

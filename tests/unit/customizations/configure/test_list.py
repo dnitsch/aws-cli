@@ -10,9 +10,10 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import mock
 from argparse import Namespace
 
-from awscli.testutils import mock, unittest
+from awscli.testutils import unittest
 from awscli.compat import six
 from awscli.customizations.configure.list import ConfigureListCommand
 
@@ -111,6 +112,14 @@ class TestConfigureListCommand(unittest.TestCase):
             rendered, r'access_key\s+\*+_key\s+iam-role')
         self.assertRegex(
             rendered, r'secret_key\s+\*+_key\s+iam-role')
+
+    def test_configure_region_from_imds(self):
+        session = FakeSession(all_variables={'region': 'from-imds'})
+        stream = six.StringIO()
+        self.configure_list = ConfigureListCommand(session, stream)
+        self.configure_list(args=[], parsed_globals=None)
+        rendered = stream.getvalue()
+        self.assertRegex(rendered, r'region\s+from-imds\s+imds')
 
     def test_configure_from_args(self):
         parsed_globals = Namespace(profile='foo')

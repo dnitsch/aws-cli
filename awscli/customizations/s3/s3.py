@@ -27,7 +27,7 @@ def awscli_initialize(cli):
     file
     """
     cli.register("building-command-table.main", add_s3)
-    cli.register('building-command-table.sync', register_sync_strategies)
+    cli.register('building-command-table.s3_sync', register_sync_strategies)
 
 
 def s3_plugin_initialize(event_handlers):
@@ -65,5 +65,4 @@ class S3(BasicCommand):
 
     def _run_main(self, parsed_args, parsed_globals):
         if parsed_args.subcommand is None:
-            raise ValueError("usage: aws [options] <command> <subcommand> "
-                             "[parameters]\naws: error: too few arguments")
+            self._raise_usage_error()

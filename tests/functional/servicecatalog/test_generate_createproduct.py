@@ -13,10 +13,11 @@
 
 
 import os
+from mock import mock
 
 from awscli.customizations.servicecatalog.utils \
     import get_s3_path
-from awscli.testutils import mock, BaseAWSCommandParamsTest
+from awscli.testutils import BaseAWSCommandParamsTest
 
 
 class TestGenerateProduct(BaseAWSCommandParamsTest):
@@ -138,7 +139,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--file-path')
 
     def test_generate_product_missing_bucket_name(self):
@@ -146,7 +147,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--bucket-name')
 
     def test_generate_product_missing_product_type(self):
@@ -154,7 +155,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--product-type')
 
     def test_generate_product_missing_product_name(self):
@@ -162,7 +163,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--product-name')
 
     def test_generate_product_missing_product_owner(self):
@@ -170,7 +171,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--product-owner')
 
     def test_generate_product_missing_provisioning_artifact_name(self):
@@ -178,7 +179,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--provisioning-artifact-name')
 
     def test_generate_product_missing_provisioning_artifact_description(self):
@@ -186,7 +187,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--provisioning-artifact-description')
 
     def test_generate_product_missing_provisioning_artifact_type(self):
@@ -194,7 +195,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
         self.cmd_line = self.build_cmd_line()
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--provisioning-artifact-type')
 
     def test_invalid_product_type(self):
@@ -203,7 +204,7 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
 
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--product-type: Invalid choice')
 
     def test_generate_product_invalid_provisioning_artifact_type(self):
@@ -212,5 +213,5 @@ class TestGenerateProduct(BaseAWSCommandParamsTest):
 
         self.assert_params_for_cmd(
             self.cmd_line,
-            expected_rc=2,
+            expected_rc=252,
             stderr_contains='--provisioning-artifact-type: Invalid choice')

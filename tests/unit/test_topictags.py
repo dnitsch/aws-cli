@@ -21,7 +21,9 @@
 #
 import json
 
-from awscli.testutils import mock, unittest, FileCreator
+import mock
+
+from awscli.testutils import unittest, FileCreator
 from awscli.topictags import TopicTagDB
 
 
@@ -295,17 +297,6 @@ class TestTopicTagDBQuery(TestTopicTagDB):
         query_dict = self.topic_tag_db.query('related topic')
         self.assertEqual(query_dict,
                          {'topic-name-2': ['topic-name-1']})
-
-    def test_query_tag_multi_values(self):
-        tag_dict = {
-            'topic-name-1': {
-                'related topic': ['foo', 'bar']
-            }
-        }
-        self.topic_tag_db = TopicTagDB(tag_dict)
-        query_dict = self.topic_tag_db.query('related topic')
-        self.assertEqual(query_dict,
-                         {'foo': ['topic-name-1'], 'bar': ['topic-name-1']})
 
     def test_query_tag_multi_values(self):
         tag_dict = {

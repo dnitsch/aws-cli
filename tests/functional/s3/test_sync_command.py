@@ -10,12 +10,17 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+from mock import patch
 import os
 
-from awscli.compat import six
-from awscli.testutils import mock
-from tests.functional.s3 import BaseS3TransferCommandTest
+from awscrt.s3 import S3RequestType
 
+from awscli.compat import six
+from awscli.customizations.s3.utils import relative_path
+from awscli.testutils import mock
+from tests.functional.s3 import (
+    BaseS3TransferCommandTest, BaseS3CLIRunnerTest, BaseCRTTransferClientTest
+)
 
 class TestSyncCommand(BaseS3TransferCommandTest):
 
@@ -44,8 +49,8 @@ class TestSyncCommand(BaseS3TransferCommandTest):
 
     def test_no_recursive_option(self):
         cmdline = '. s3://mybucket --recursive'
-        # Return code will be 2 for invalid parameter ``--recursive``
-        self.run_cmd(cmdline, expected_rc=2)
+        # Return code will be 252 for invalid parameter ``--recursive``
+        self.run_cmd(cmdline, expected_rc=252)
 
     def test_sync_from_non_existant_directory(self):
         non_existant_directory = os.path.join(self.files.rootdir, 'fakedir')
@@ -71,6 +76,29 @@ class TestSyncCommand(BaseS3TransferCommandTest):
         # Make sure the file now exists.
         self.assertTrue(
             os.path.exists(os.path.join(non_existant_directory, key)))
+
+    def test_dryrun_sync(self):
+        self.parsed_responses = [
+            self.list_objects_response([]),
+        ]
+        full_path = self.files.create_file('file.txt', 'mycontent')
+        cmdline = (
+            f'{self.prefix} {self.files.rootdir} s3://bucket/ --dryrun'
+        )
+        stdout, _, _ = self.run_cmd(cmdline, expected_rc=0)
+        self.assert_operations_called(
+            [
+                ('ListObjectsV2', {
+                    'Bucket': 'bucket',
+                    'Prefix': '',
+                }),
+            ]
+        )
+        self.assertIn(
+            f'(dryrun) upload: {relative_path(full_path)} to '
+            f's3://bucket/file.txt',
+            stdout
+        )
 
     def test_glacier_sync_with_force_glacier(self):
         self.parsed_responses = [
@@ -287,3 +315,155 @@ class TestSyncCommand(BaseS3TransferCommandTest):
                 self.get_object_request(accesspoint_arn, 'mykey')
             ]
         )
+
+    def test_with_copy_props(self):
+        cmdline = self.prefix
+        cmdline += 's3://sourcebucket/ s3://bucket/'
+        cmdline += ' --copy-props default'
+
+        upload_id = 'upload_id'
+        large_tag_set = {'tag-key': 'val' * 3000}
+        metadata = {'tag-key': 'tag-value'}
+        self.parsed_responses = [
+            self.list_objects_response(keys=['key'], Size=8 * 1024 ** 2),
+            self.list_objects_response(keys=[]),
+            self.head_object_response(
+                Metadata=metadata,
+            ),
+            self.get_object_tagging_response(large_tag_set),
+            self.create_mpu_response(upload_id),
+            self.upload_part_copy_response(),
+            self.complete_mpu_response(),
+            self.put_object_tagging_response(),
+        ]
+        self.run_cmd(cmdline, expected_rc=0)
+        self.assert_operations_called(
+            [
+                self.list_objects_request('sourcebucket'),
+                self.list_objects_request('bucket'),
+                self.head_object_request('sourcebucket', 'key'),
+                self.get_object_tagging_request('sourcebucket', 'key'),
+                self.create_mpu_request('bucket', 'key', Metadata=metadata),
+                self.upload_part_copy_request(
+                    'sourcebucket', 'key', 'bucket', 'key', upload_id,
+                    CopySourceRange=mock.ANY, PartNumber=1,
+                ),
+                self.complete_mpu_request('bucket', 'key', upload_id, 1),
+                self.put_object_tagging_request(
+                    'bucket', 'key', large_tag_set
+                ),
+            ]
+        )
+
+
+class TestSyncSourceRegion(BaseS3CLIRunnerTest):
+    def test_respects_source_region(self):
+        source_region = 'af-south-1'
+        cmdline = [
+            's3', 'sync', 's3://sourcebucket/', 's3://bucket/',
+            '--region', self.region, '--source-region', source_region
+        ]
+        self.add_botocore_list_objects_response(['key'])
+        self.add_botocore_list_objects_response([])
+        self.add_botocore_copy_object_response()
+        result = self.run_command(cmdline)
+        self.assert_no_remaining_botocore_responses()
+        self.assert_operations_to_endpoints(
+            cli_runner_result=result,
+            expected_operations_to_endpoints=[
+                ('ListObjectsV2',
+                 self.get_virtual_s3_host('sourcebucket', source_region)),
+                ('ListObjectsV2',
+                 self.get_virtual_s3_host('bucket', self.region)),
+                ('CopyObject',
+                 self.get_virtual_s3_host('bucket', self.region))
+            ]
+        )
+
+
+class TestSyncWithCRTClient(BaseCRTTransferClientTest):
+    def test_upload_sync_using_crt_client(self):
+        filename = self.files.create_file('myfile', 'mycontent')
+        cmdline = [
+            's3', 'sync', self.files.rootdir, 's3://bucket/',
+        ]
+        self.add_botocore_list_objects_response([])
+        self.run_command(cmdline)
+        crt_requests = self.get_crt_make_request_calls()
+        self.assertEqual(len(crt_requests), 1)
+        self.assert_crt_make_request_call(
+            crt_requests[0],
+            expected_type=S3RequestType.PUT_OBJECT,
+            expected_host=self.get_virtual_s3_host('bucket'),
+            expected_path='/myfile',
+            expected_send_filepath=filename,
+        )
+
+    def test_download_sync_using_crt_client(self):
+        cmdline = [
+            's3', 'sync', 's3://bucket/', self.files.rootdir,
+        ]
+        self.add_botocore_list_objects_response(['key'])
+        self.run_command(cmdline)
+        crt_requests = self.get_crt_make_request_calls()
+        self.assertEqual(len(crt_requests), 1)
+        self.assert_crt_make_request_call(
+            crt_requests[0],
+            expected_type=S3RequestType.GET_OBJECT,
+            expected_host=self.get_virtual_s3_host('bucket'),
+            expected_path='/key',
+            expected_recv_startswith=os.path.join(self.files.rootdir, 'key'),
+        )
+
+    def test_upload_sync_with_delete_using_crt_client(self):
+        filename = self.files.create_file('a-file', 'mycontent')
+        cmdline = [
+            's3', 'sync', self.files.rootdir, 's3://bucket/', '--delete'
+        ]
+        self.add_botocore_list_objects_response(['delete-this'])
+        self.run_command(cmdline)
+        crt_requests = self.get_crt_make_request_calls()
+        self.assertEqual(len(crt_requests), 2)
+        self.assert_crt_make_request_call(
+            crt_requests[0],
+            expected_type=S3RequestType.PUT_OBJECT,
+            expected_host=self.get_virtual_s3_host('bucket'),
+            expected_path='/a-file',
+            expected_send_filepath=filename,
+        )
+        self.assert_crt_make_request_call(
+            crt_requests[1],
+            expected_type=S3RequestType.DEFAULT,
+            expected_host=self.get_virtual_s3_host('bucket'),
+            expected_path='/delete-this',
+            expected_http_method='DELETE'
+        )
+
+    def test_download_sync_with_delete_using_crt_client(self):
+        self.files.create_file('delete-this', 'content')
+        cmdline = [
+            's3', 'sync', 's3://bucket/', self.files.rootdir, '--delete'
+        ]
+        self.add_botocore_list_objects_response(['key'])
+        self.run_command(cmdline)
+        crt_requests = self.get_crt_make_request_calls()
+        self.assertEqual(len(crt_requests), 1)
+        self.assert_crt_make_request_call(
+            crt_requests[0],
+            expected_type=S3RequestType.GET_OBJECT,
+            expected_host=self.get_virtual_s3_host('bucket'),
+            expected_path='/key',
+            expected_recv_startswith=os.path.join(self.files.rootdir, 'key'),
+        )
+        self.assertFalse(os.path.exists('delete-this'))
+
+    def test_does_not_use_crt_client_for_copy_syncs(self):
+        cmdline = [
+            's3', 'sync', 's3://bucket/', 's3://otherbucket/'
+        ]
+        self.add_botocore_list_objects_response(['key'])
+        self.add_botocore_list_objects_response([])
+        self.add_botocore_copy_object_response()
+        self.run_command(cmdline)
+        self.assertEqual(self.get_crt_make_request_calls(), [])
+        self.assert_no_remaining_botocore_responses()

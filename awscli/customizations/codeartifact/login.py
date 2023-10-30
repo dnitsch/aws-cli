@@ -5,17 +5,21 @@ import sys
 import subprocess
 import re
 
+from configparser import RawConfigParser
+from io import StringIO
+from urllib.parse import urlsplit
+
 from datetime import datetime
 from dateutil.tz import tzutc
 from dateutil.relativedelta import relativedelta
 from botocore.utils import parse_timestamp
 
 from awscli.compat import (
-    is_windows, urlparse, RawConfigParser, StringIO,
-    get_stderr_encoding, is_macos
+    is_windows, urlparse, get_stderr_encoding, is_macos
 )
 from awscli.customizations import utils as cli_utils
 from awscli.customizations.commands import BasicCommand
+from awscli.utils import original_ld_library_path
 from awscli.customizations.utils import uni_print
 
 
@@ -48,7 +52,7 @@ class CommandFailedError(Exception):
         Exception.__init__(self, msg)
 
 
-class BaseLogin(object):
+class BaseLogin:
     _TOOL_NOT_FOUND_MESSAGE = '%s was not found. Please verify installation.'
 
     def __init__(self, auth_token, expiration, repository_endpoint,
@@ -98,11 +102,12 @@ class BaseLogin(object):
 
     def _run_command(self, tool, command, *, ignore_errors=False):
         try:
-            self.subprocess_utils.run(
-                command,
-                capture_output=True,
-                check=True
-            )
+            with original_ld_library_path():
+                self.subprocess_utils.run(
+                    command,
+                    capture_output=True,
+                    check=True,
+                )
         except subprocess.CalledProcessError as ex:
             if not ignore_errors:
                 raise CommandFailedError(ex)
@@ -298,11 +303,12 @@ class NuGetBaseLogin(BaseLogin):
             return
 
         try:
-            self.subprocess_utils.run(
-                command,
-                capture_output=True,
-                check=True
-            )
+            with original_ld_library_path():
+                self.subprocess_utils.run(
+                    command,
+                    capture_output=True,
+                    check=True
+                )
         except subprocess.CalledProcessError as e:
             uni_print('Failed to update the NuGet.Config\n')
             raise CommandFailedError(e)
@@ -331,10 +337,11 @@ class NuGetBaseLogin(BaseLogin):
         100. Source Name 100 [Activé]
              https://source100.com/index.json
         """
-        response = self.subprocess_utils.check_output(
-            self._get_list_command(),
-            stderr=self.subprocess_utils.PIPE
-        )
+        with original_ld_library_path():
+            response = self.subprocess_utils.check_output(
+                self._get_list_command(),
+                stderr=self.subprocess_utils.PIPE
+            )
 
         lines = response.decode(os.device_encoding(1) or "utf-8").splitlines()
         lines = [line for line in lines if line.strip() != '']
@@ -481,7 +488,7 @@ class NpmLogin(BaseLogin):
             [cls.NPM_CMD, 'config', 'set', registry, endpoint]
         )
 
-        repo_uri = urlparse.urlsplit(endpoint)
+        repo_uri = urlsplit(endpoint)
 
         # configure npm to always require auth for the repository.
         always_auth_config = '//{}{}:always-auth'.format(
@@ -514,7 +521,7 @@ class PipLogin(BaseLogin):
 
     @classmethod
     def get_commands(cls, endpoint, auth_token, **kwargs):
-        repo_uri = urlparse.urlsplit(endpoint)
+        repo_uri = urlsplit(endpoint)
         pip_index_url = cls.PIP_INDEX_URL_FMT.format(
             scheme=repo_uri.scheme,
             auth_token=auth_token,
@@ -527,7 +534,7 @@ class PipLogin(BaseLogin):
 
 class TwineLogin(BaseLogin):
 
-    DEFAULT_PYPI_RC_FMT = u'''\
+    DEFAULT_PYPI_RC_FMT = '''\
 [distutils]
 index-servers=
     pypi
@@ -551,7 +558,7 @@ password: {auth_token}'''
         if pypi_rc_path is None:
             pypi_rc_path = self.get_pypi_rc_path()
         self.pypi_rc_path = pypi_rc_path
-        super(TwineLogin, self).__init__(
+        super().__init__(
             auth_token, expiration, repository_endpoint,
             domain, repository, subprocess_utils)
 
@@ -598,7 +605,7 @@ password: {auth_token}'''
                 pypi_rc.set('codeartifact', 'username', 'aws')
                 pypi_rc.set('codeartifact', 'password', auth_token)
             except Exception as e:  # invalid .pypirc file
-                sys.stdout.write('%s is in an invalid state.' % pypi_rc_path)
+                sys.stdout.write(f'{pypi_rc_path} is in an invalid state.')
                 sys.stdout.write(os.linesep)
                 raise e
         else:
@@ -624,7 +631,7 @@ password: {auth_token}'''
             sys.stdout.write('Dryrun mode is enabled, not writing to pypirc.')
             sys.stdout.write(os.linesep)
             sys.stdout.write(
-                '%s would have been set to the following:' % self.pypi_rc_path
+                f'{self.pypi_rc_path} would have been set to the following:'
             )
             sys.stdout.write(os.linesep)
             sys.stdout.write(os.linesep)

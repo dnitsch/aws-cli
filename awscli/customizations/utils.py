@@ -15,10 +15,19 @@ Utility functions to make it easier to work with customizations.
 
 """
 import copy
+import re
 import sys
+import xml
 
 from botocore.exceptions import ClientError
+from awscli.customizations.exceptions import ParamValidationError
 
+
+_SENTENCE_DELIMETERS_REGEX = re.compile(r'[.:]+')
+_LINE_BREAK_CHARS = [
+    '\n',
+    '\u2028'
+]
 
 def rename_argument(argument_table, existing_name, new_name):
     current = argument_table[existing_name]
@@ -37,15 +46,12 @@ def _copy_argument(argument_table, current_name, copy_name):
 
 def make_hidden_alias(argument_table, existing_name, alias_name):
     """Create a hidden alias for an existing argument.
-
     This will copy an existing argument object in an arg table,
     and add a new entry to the arg table with a different name.
     The new argument will also be undocumented.
-
     This is needed if you want to check an existing argument,
     but you still need the other one to work for backwards
     compatibility reasons.
-
     """
     current = argument_table[existing_name]
     copy_arg = _copy_argument(argument_table, existing_name, alias_name)
@@ -84,29 +90,6 @@ def alias_command(command_table, existing_name, new_name):
     current._UNDOCUMENTED = True
 
 
-def make_hidden_command_alias(command_table, existing_name, alias_name):
-    """Create a hidden alias for an exiting command.
-
-    This will copy an existing command object in a command table and add a new
-    entry to the command table with a different name. The new command will
-    be undocumented.
-
-    This is needed if you want to change an existing command, but you still
-    need the old name to work for backwards compatibility reasons.
-
-    :type command_table: dict
-    :param command_table: The full command table for the CLI or a service.
-
-    :type existing_name: str
-    :param existing_name: The current name of the command.
-
-    :type alias_name: str
-    :param alias_name: The new name for the command.
-    """
-    new = _copy_argument(command_table, existing_name, alias_name)
-    new._UNDOCUMENTED = True
-
-
 def validate_mutually_exclusive_handler(*groups):
     def _handler(parsed_args, **kwargs):
         return validate_mutually_exclusive(parsed_args, *groups)
@@ -130,9 +113,11 @@ def validate_mutually_exclusive(parsed_args, *groups):
         if current_group is None:
             current_group = key_group
         elif not key_group == current_group:
-            raise ValueError('The key "%s" cannot be specified when one '
-                             'of the following keys are also specified: '
-                             '%s' % (key, ', '.join(current_group)))
+            raise ParamValidationError(
+                'The key "%s" cannot be specified when one '
+                'of the following keys are also specified: '
+                '%s' % (key, ', '.join(current_group))
+            )
 
 
 def _get_group_for_key(key, groups):
@@ -227,3 +212,56 @@ def get_policy_arn_suffix(region):
         return "aws-us-gov"
     else:
         return "aws"
+
+
+def get_shape_doc_overview(shape):
+    """Return a documentation overview of a shape
+
+    Currently, this just returns the first sentence of the shape's
+    documentation.
+    """
+    content = shape.documentation
+    content = _strip_xml_from_documentation(content)
+    # In order to avoid having the content too dense, we limit
+    # the documentation to the first sentence.
+    content = _get_first_sentence(content)
+    # There are characters that may mess up the indentation by introducing new
+    # lines. We want to ignore those for the purpose of an overview.
+    content = _remove_line_breaks(content)
+    return content
+
+
+def _strip_xml_from_documentation(documentation):
+    try:
+        # We are surrounding the docstrings with our own tags in order
+        # to make sure the dom parser will look at all elements in the
+        # docstring as some docstrings may not have xml nodes that do
+        # not all belong to the same root node.
+        xml_doc = '<doc>%s</doc>' % documentation
+        xml_dom = xml.dom.minidom.parseString(xml_doc)
+    except xml.parsers.expat.ExpatError:
+        return documentation
+    content = []
+    _strip_xml_from_child_nodes(xml_dom, content)
+    return ''.join(content)
+
+
+def _strip_xml_from_child_nodes(node, content):
+    for child_node in node.childNodes:
+        if child_node.nodeType == node.TEXT_NODE:
+            content.append(child_node.data)
+        else:
+            _strip_xml_from_child_nodes(child_node, content)
+
+
+def _get_first_sentence(content):
+    content = _SENTENCE_DELIMETERS_REGEX.split(content, 1)[0]
+    if content:
+        content += '.'
+    return content
+
+
+def _remove_line_breaks(content):
+    for char in _LINE_BREAK_CHARS:
+        content = content.replace(char, ' ')
+    return content

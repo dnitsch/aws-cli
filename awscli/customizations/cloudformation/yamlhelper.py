@@ -10,13 +10,16 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import re
+
+import ruamel.yaml
+from ruamel.yaml.resolver import ScalarNode, SequenceNode
 from botocore.compat import json
 from botocore.compat import OrderedDict
 
-import yaml
-from yaml.resolver import ScalarNode, SequenceNode
 
 from awscli.compat import six
+from awscli.utils import dump_yaml_to_str
 
 
 def intrinsics_multi_constructor(loader, tag_prefix, node):
@@ -60,18 +63,37 @@ def _dict_representer(dumper, data):
     return dumper.represent_dict(data.items())
 
 
+def _add_yaml_1_1_boolean_resolvers(resolver_cls):
+    # CloudFormation treats unquoted values that are YAML 1.1 native
+    # booleans as booleans, rather than strings. In YAML 1.2, the only
+    # boolean values are "true" and "false" so values such as "yes" and "no"
+    # when loaded as strings are not quoted when dumped. This logic ensures
+    # that we dump these values with quotes so that CloudFormation treats
+    # these values as strings and not booleans.
+    boolean_regex = re.compile(
+        '^(?:yes|Yes|YES|no|No|NO'
+        '|true|True|TRUE|false|False|FALSE'
+        '|on|On|ON|off|Off|OFF)$'
+    )
+    boolean_first_chars = list(u'yYnNtTfFoO')
+    resolver_cls.add_implicit_resolver(
+        'tag:yaml.org,2002:bool', boolean_regex, boolean_first_chars)
+
+
 def yaml_dump(dict_to_dump):
     """
     Dumps the dictionary as a YAML document
     :param dict_to_dump:
     :return:
     """
-    FlattenAliasDumper.add_representer(OrderedDict, _dict_representer)
-    return yaml.dump(
-        dict_to_dump,
-        default_flow_style=False,
-        Dumper=FlattenAliasDumper,
-    )
+
+    yaml = ruamel.yaml.YAML(typ="safe", pure=True)
+    yaml.default_flow_style = False
+    yaml.Representer = FlattenAliasRepresenter
+    _add_yaml_1_1_boolean_resolvers(yaml.Resolver)
+    yaml.Representer.add_representer(OrderedDict, _dict_representer)
+
+    return dump_yaml_to_str(yaml, dict_to_dump)
 
 
 def _dict_constructor(loader, node):
@@ -79,12 +101,6 @@ def _dict_constructor(loader, node):
     loader.flatten_mapping(node)
     return OrderedDict(loader.construct_pairs(node))
 
-
-class SafeLoaderWrapper(yaml.SafeLoader):
-    """Isolated safe loader to allow for customizations without global changes.
-    """
-
-    pass
 
 def yaml_parse(yamlstr):
     """Parse a yaml string"""
@@ -94,13 +110,17 @@ def yaml_parse(yamlstr):
         # json parser.
         return json.loads(yamlstr, object_pairs_hook=OrderedDict)
     except ValueError:
-        loader = SafeLoaderWrapper
-        loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, 
-                               _dict_constructor)
-        loader.add_multi_constructor("!", intrinsics_multi_constructor)
-        return yaml.load(yamlstr, loader)
+        yaml = ruamel.yaml.YAML(typ="safe", pure=True)
+        yaml.Constructor.add_constructor(
+            ruamel.yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+            _dict_constructor)
+        yaml.Constructor.add_multi_constructor(
+            "!", intrinsics_multi_constructor)
+        _add_yaml_1_1_boolean_resolvers(yaml.Resolver)
+
+        return yaml.load(yamlstr)
 
 
-class FlattenAliasDumper(yaml.SafeDumper):
+class FlattenAliasRepresenter(ruamel.yaml.representer.SafeRepresenter):
     def ignore_aliases(self, data):
         return True

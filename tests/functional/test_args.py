@@ -10,6 +10,7 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+from awscli.clidriver import AWSCLIEntryPoint
 from awscli.testutils import create_clidriver
 from awscli.testutils import BaseAWSCommandParamsTest, FileCreator
 
@@ -26,6 +27,7 @@ class TestArgsResolution(BaseAWSCommandParamsTest):
         self.environ['AWS_CONFIG_FILE'] = self.files.create_file(
             'myconfig', config_contents)
         self.driver = create_clidriver()
+        self.entry_point = AWSCLIEntryPoint(self.driver)
 
     def tearDown(self):
         super(TestArgsResolution, self).tearDown()
@@ -41,3 +43,9 @@ class TestArgsResolution(BaseAWSCommandParamsTest):
         self.environ['AWS_PROFILE'] = 'foo'
         # ProfileNotFound exception shouldn't be raised
         self.run_cmd('--version', expected_rc=0)
+
+    def test_can_get_list_profiles_with_non_existent_profile_in_env_var(self):
+        self.environ['AWS_PROFILE'] = 'foo'
+        # ProfileNotFound exception shouldn't be raised
+        stdout, _, _ = self.run_cmd('configure list-profiles')
+        self.assertEqual(stdout, 'bar\n')

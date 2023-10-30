@@ -10,11 +10,13 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock, unittest
+from awscli.testutils import unittest
+import mock
 
 from awscli.clidriver import CLIDriver
 from awscli.customizations.commands import BasicHelp, BasicCommand
 from awscli.customizations.commands import BasicDocHandler
+from awscli.testutils import BaseAWSCommandParamsTest
 from botocore.hooks import HierarchicalEmitter
 from tests.unit.test_clidriver import FakeSession, FakeCommand
 
@@ -90,7 +92,7 @@ class TestBasicCommand(unittest.TestCase):
         sub_help_command = subcommand.create_help_command()
         # Note that the name of this Subcommand was never changed even
         # though it was put into the table as ``basic``. If no name
-        # is overridden it uses the name ``commandname``.
+        # is overriden it uses the name ``commandname``.
         self.assertEqual(sub_help_command.event_class, 'mock.commandname')
 
 
@@ -99,6 +101,9 @@ class TestBasicCommandHooks(unittest.TestCase):
 
     def setUp(self):
         self.session = FakeSession()
+        self.session.get_config_variable = mock.Mock()
+        return_values = {'cli_auto_prompt': 'off'}
+        self.session.get_config_variable.side_effect = return_values
         self.emitter = mock.Mock(wraps=HierarchicalEmitter())
         self.session.emitter = self.emitter
 
@@ -125,8 +130,8 @@ class TestBasicCommandHooks(unittest.TestCase):
             'top-level-args-parsed',
             'session-initialized',
             'building-command-table.s3',
-            'building-command-table.foo',
-            'building-arg-table.foo',
+            'building-command-table.s3_foo',
+            'building-arg-table.s3_foo',
             'before-building-argument-table-parser.s3.foo'
         ])
 
@@ -197,3 +202,41 @@ class TestBasicDocHandler(unittest.TestCase):
         help_command.command_table = {'command': fake_command}
         rendered = self.generate_global_synopsis_docs(help_command)
         self.assert_global_args_not_documented(arg_table, rendered)
+
+
+class TestUserAgentCommandSection(BaseAWSCommandParamsTest):
+    def _assert_customization_in_user_agent(self, customization):
+        self.assertTrue(
+            self.driver.session.user_agent_extra.endswith(customization)
+        )
+
+    def test_customization_in_user_agent_s3_cp(self):
+        cmd = 's3 cp s3://foo s3://bar'
+        self.run_cmd(cmd)
+        self._assert_customization_in_user_agent(' command/s3.cp')
+
+    def test_customization_in_user_agent_s3_ls(self):
+        cmd = 's3 ls'
+        # it should fail but the user_agent should be correct
+        self.run_cmd(cmd, expected_rc=255)
+        self._assert_customization_in_user_agent(' command/s3.ls')
+
+    def test_customization_in_user_agent_logs_tail(self):
+        cmd = 'logs tail foo'
+        # it should fail but the user_agent should be correct
+        self.run_cmd(cmd, expected_rc=255)
+        self._assert_customization_in_user_agent(' command/logs.tail')
+
+    def test_service_operation_in_user_agent(self):
+        cmd = 'ec2 describe-instances'
+        self.run_cmd(cmd)
+        self._assert_customization_in_user_agent(
+            ' command/ec2.describe-instances'
+        )
+
+    def test_custom_service_operation_in_user_agent(self):
+        cmd = 'rds add-option-to-option-group --option-group-name foo'
+        self.run_cmd(cmd)
+        self._assert_customization_in_user_agent(
+            ' command/rds.add-option-to-option-group'
+        )

@@ -10,9 +10,8 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-
 import json
-import yaml
+from ruamel.yaml import YAML
 
 from awscli.customizations.ecs import exceptions
 
@@ -78,4 +77,5 @@ def parse_appspec(appspec_str):
     try:
         return json.loads(appspec_str)
     except ValueError:
-        return yaml.safe_load(appspec_str)
+        yaml = YAML(typ='safe', pure=True)
+        return yaml.load(appspec_str)

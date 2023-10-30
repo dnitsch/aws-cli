@@ -12,10 +12,13 @@
 # language governing permissions and limitations under the License.
 import io
 import argparse
+import mock
+
 from botocore.exceptions import ClientError
+from botocore.model import Shape
 
 from awscli.customizations import utils
-from awscli.testutils import mock
+from awscli.customizations.exceptions import ParamValidationError
 from awscli.testutils import unittest
 from awscli.testutils import BaseAWSHelpOutputTest
 
@@ -56,21 +59,6 @@ class TestCommandTableAlias(BaseAWSHelpOutputTest):
         self.driver.main(['help'])
         self.assert_contains(new_name)
         self.assert_not_contains(old_name)
-
-    def test_make_hidden_alias(self):
-        old_name = 'alexaforbusiness'
-        new_name = 'nopossiblewaythisisalreadythere'
-
-        def handler(command_table, **kwargs):
-            utils.make_hidden_command_alias(command_table, old_name, new_name)
-
-        self._assert_command_exists(old_name, handler)
-        self._assert_command_exists(new_name, handler)
-
-        # Verify that the new isn't documented
-        self.driver.main(['help'])
-        self.assert_not_contains(new_name)
-        self.assert_contains(old_name)
 
     def _assert_command_exists(self, command_name, handler):
         # Verify that we can alias a top level command.
@@ -117,7 +105,7 @@ class TestValidateMututuallyExclusiveGroups(unittest.TestCase):
         utils.validate_mutually_exclusive(parsed, ['foo'], ['bar'])
         # But if we specify both foo and bar then we get an error.
         parsed = FakeParsedArgs(foo='one', bar='two')
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ParamValidationError):
             utils.validate_mutually_exclusive(parsed, ['foo'], ['bar'])
 
     def test_multiple_groups(self):
@@ -128,7 +116,7 @@ class TestValidateMututuallyExclusiveGroups(unittest.TestCase):
         utils.validate_mutually_exclusive(parsed, *groups)
         # But this is bad.
         parsed = FakeParsedArgs(foo='one', bar=None, qux='three')
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ParamValidationError):
             utils.validate_mutually_exclusive(parsed, *groups)
 
 
@@ -267,3 +255,59 @@ class TestGetPolicyARNSuffix(unittest.TestCase):
         self.assertEqual("aws", utils.get_policy_arn_suffix("us-east-1"))
         self.assertEqual("aws", utils.get_policy_arn_suffix("sa-east-1"))
         self.assertEqual("aws", utils.get_policy_arn_suffix("ap-south-1"))
+
+
+class TestGetShapeDocOverview(unittest.TestCase):
+    def assert_expected_shape_overview(self, shape_docs, expected_overview):
+        shape = mock.Mock(Shape)
+        shape.documentation = shape_docs
+        actual_overview = utils.get_shape_doc_overview(shape)
+        self.assertEqual(actual_overview, expected_overview)
+
+    def test_get_shape_doc_overview(self):
+        self.assert_expected_shape_overview(
+            shape_docs='Shape documentation',
+            expected_overview='Shape documentation.'
+        )
+
+    def test_uses_content_before_first_period(self):
+        self.assert_expected_shape_overview(
+            shape_docs='First sentence. Second Sentence.',
+            expected_overview='First sentence.'
+        )
+
+    def test_uses_content_before_first_colon(self):
+        self.assert_expected_shape_overview(
+            shape_docs='<p>Broken XML docs',
+            expected_overview='<p>Broken XML docs.'
+        )
+
+    def test_removes_xml_tags(self):
+        self.assert_expected_shape_overview(
+            shape_docs='<p>Shape documentation</p>',
+            expected_overview='Shape documentation.'
+        )
+
+    def test_removes_nested_xml_tags(self):
+        self.assert_expected_shape_overview(
+            shape_docs='<p>Shape <code>documentation</code></p>',
+            expected_overview='Shape documentation.'
+        )
+
+    def test_can_handle_broken_xml(self):
+        self.assert_expected_shape_overview(
+            shape_docs='<p>Broken XML docs',
+            expected_overview='<p>Broken XML docs.'
+        )
+
+    def test_ignores_newlines(self):
+        self.assert_expected_shape_overview(
+            shape_docs='First line\nSecond line',
+            expected_overview='First line Second line.'
+        )
+
+    def test_ignores_line_separator_char(self):
+        self.assert_expected_shape_overview(
+            shape_docs='First line\u2028Second line',
+            expected_overview='First line Second line.'
+        )

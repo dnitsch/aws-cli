@@ -23,6 +23,7 @@ from botocore.exceptions import ClientError
 from awscli.compat import six
 from awscli.customizations.codedeploy.utils import validate_s3_location
 from awscli.customizations.commands import BasicCommand
+from awscli.customizations.exceptions import ParamValidationError
 from awscli.compat import ZIP_COMPRESSION_MODE
 
 
@@ -58,11 +59,11 @@ class Push(BasicCommand):
             'synopsis': '--s3-location s3://<bucket>/<key>',
             'required': True,
             'help_text': (
-                'Required. Information about the location of the application '
-                'revision to be uploaded to Amazon S3. You must specify both '
-                'a bucket and a key that represent the Amazon S3 bucket name '
-                'and the object key name. Content will be zipped before '
-                'uploading. Use the format s3://\<bucket\>/\<key\>'
+                r'Required. Information about the location of the application '
+                r'revision to be uploaded to Amazon S3. You must specify both '
+                r'a bucket and a key that represent the Amazon S3 bucket name '
+                r'and the object key name. Content will be zipped before '
+                r'uploading. Use the format s3://\<bucket\>/\<key\>'
             )
         },
         {
@@ -119,12 +120,13 @@ class Push(BasicCommand):
             region_name=parsed_globals.region
         )
         self._push(parsed_args)
+        return 0
 
     def _validate_args(self, parsed_args):
         validate_s3_location(parsed_args, 's3_location')
         if parsed_args.ignore_hidden_files \
                 and parsed_args.no_ignore_hidden_files:
-            raise RuntimeError(
+            raise ParamValidationError(
                 'You cannot specify both --ignore-hidden-files and '
                 '--no-ignore-hidden-files.'
             )

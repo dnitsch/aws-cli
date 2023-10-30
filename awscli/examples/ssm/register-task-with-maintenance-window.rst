@@ -3,6 +3,7 @@
 The following ``register-task-with-maintenance-window`` example registers an Automation task with a maintenance window that is targeted at an instance. ::
 
     aws ssm register-task-with-maintenance-window \
+        --cli-binary-format raw-in-base64-out \
         --window-id "mw-082dcd7649EXAMPLE" \
         --targets Key=InstanceIds,Values=i-1234520122EXAMPLE \
         --task-arn AWS-RestartEC2Instance \
@@ -27,6 +28,7 @@ For more information, see `Register a Task with the Maintenance Window (AWS CLI)
 The following ``register-task-with-maintenance-window`` example registers a Lambda task with a Maintenance Window that is targeted at an instance. ::
 
     aws ssm register-task-with-maintenance-window \
+        --cli-binary-format raw-in-base64-out \
         --window-id "mw-082dcd7649dee04e4" \
         --targets Key=InstanceIds,Values=i-12344d305eEXAMPLE \
         --task-arn arn:aws:lambda:us-east-1:111222333444:function:SSMTestLAMBDA \
@@ -52,6 +54,7 @@ For more information, see `Register a Task with the Maintenance Window (AWS CLI)
 The following ``register-task-with-maintenance-window`` example registers a Run Command task with a maintenance window that is targeted at an instance. ::
 
     aws ssm register-task-with-maintenance-window \
+        --cli-binary-format raw-in-base64-out \
         --window-id "mw-082dcd7649dee04e4" \
         --targets "Key=InstanceIds,Values=i-12344d305eEXAMPLE" \
         --service-role-arn "arn:aws:iam::111222333444:role/SSM" \
@@ -76,6 +79,7 @@ For more information, see `Register a Task with the Maintenance Window (AWS CLI)
 The following ``register-task-with-maintenance-window`` example registers a Step Functions task with a maintenance window that is targeted at an instance. ::
 
     aws ssm register-task-with-maintenance-window \
+        --cli-binary-format raw-in-base64-out \
         --window-id "mw-1234d787d6EXAMPLE" \
         --targets Key=WindowTargetIds,Values=12347414-69c3-49f8-95b8-ed2dcEXAMPLE \
         --task-arn arn:aws:states:us-east-1:111222333444:stateMachine:SSMTestStateMachine \
@@ -101,6 +105,7 @@ For more information, see `Register a Task with the Maintenance Window (AWS CLI)
 The following ``register-task-with-maintenance-window`` example registers a task using a maintenance window target ID. The maintenance window target ID was in the output of the ``aws ssm register-target-with-maintenance-window`` command. You can also retrieve it from the output of the ``aws ssm describe-maintenance-window-targets`` command. ::
 
     aws ssm register-task-with-maintenance-window \
+        --cli-binary-format raw-in-base64-out \
         --targets "Key=WindowTargetIds,Values=350d44e6-28cc-44e2-951f-4b2c9EXAMPLE" \
         --task-arn "AWS-RunShellScript" \
         --service-role-arn "arn:aws:iam::111222333444:role/MaintenanceWindowsRole" \

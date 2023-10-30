@@ -17,13 +17,15 @@ registered with the event system.
 
 """
 from awscli.argprocess import ParamShorthandParser
+from awscli.customizations.ec2instanceconnect import register_ec2_instance_connect_commands
 from awscli.paramfile import register_uri_param_handler
+from awscli.clidriver import no_pager_handler
 from awscli.customizations import datapipeline
 from awscli.customizations.addexamples import add_examples
 from awscli.customizations.argrename import register_arg_renames
 from awscli.customizations.assumerole import register_assume_role_provider
 from awscli.customizations.awslambda import register_lambda_create_function
-from awscli.customizations.cliinputjson import register_cli_input_json
+from awscli.customizations.cliinput import register_cli_input_args
 from awscli.customizations.cloudformation import initialize as cloudformation_init
 from awscli.customizations.cloudfront import register as register_cloudfront
 from awscli.customizations.cloudsearch import initialize as cloudsearch_init
@@ -40,6 +42,9 @@ from awscli.customizations.configservice.rename_cmd import \
     register_rename_config
 from awscli.customizations.configservice.subscribe import register_subscribe
 from awscli.customizations.configure.configure import register_configure_cmd
+from awscli.customizations.dynamodb.ddb import register_ddb
+from awscli.customizations.dynamodb.paginatorfix import \
+    register_dynamodb_paginator_fix
 from awscli.customizations.history import register_history_mode
 from awscli.customizations.history import register_history_commands
 from awscli.customizations.ec2.addcount import register_count_events
@@ -68,7 +73,6 @@ from awscli.customizations.kms import register_fix_kms_create_grant_docs
 from awscli.customizations.dlm.dlm import dlm_initialize
 from awscli.customizations.opsworks import initialize as opsworks_init
 from awscli.customizations.paginate import register_pagination
-from awscli.customizations.preview import register_preview_commands
 from awscli.customizations.putmetricdata import register_put_metric_data
 from awscli.customizations.rds import register_rds_modify_split
 from awscli.customizations.rds import register_add_generate_db_auth_token
@@ -77,21 +81,23 @@ from awscli.customizations.removals import register_removals
 from awscli.customizations.route53 import register_create_hosted_zone_doc_fix
 from awscli.customizations.s3.s3 import s3_plugin_initialize
 from awscli.customizations.s3errormsg import register_s3_error_msg
-from awscli.customizations.scalarparse import register_scalar_parser
+from awscli.customizations.timestampformat import register_timestamp_format
 from awscli.customizations.sessendemail import register_ses_send_email
+from awscli.customizations.sso import register_sso_commands
 from awscli.customizations.streamingoutputarg import add_streaming_output_arg
 from awscli.customizations.translate import register_translate_import_terminology
 from awscli.customizations.toplevelbool import register_bool_params
 from awscli.customizations.waiters import register_add_waiters
 from awscli.customizations.opsworkscm import register_alias_opsworks_cm
-from awscli.customizations.mturk import register_alias_mturk_command
-from awscli.customizations.sagemaker import register_alias_sagemaker_runtime_command
 from awscli.customizations.servicecatalog import register_servicecatalog_commands
 from awscli.customizations.s3events import register_event_stream_arg
 from awscli.customizations.sessionmanager import register_ssm_session
-from awscli.customizations.sms_voice import register_sms_voice_hide
-from awscli.customizations.dynamodb import register_dynamodb_paginator_fix
-from awscli.customizations.overridesslcommonname import register_override_ssl_common_name
+from awscli.customizations.logs import register_logs_commands
+from awscli.customizations.devcommands import register_dev_commands
+from awscli.customizations.wizard.commands import register_wizard_commands
+from awscli.customizations.binaryformat import add_binary_formatter
+from awscli.customizations.lightsail import initialize as lightsail_initialize
+from awscli.alias import register_alias_commands
 from awscli.customizations.kinesis import \
     register_kinesis_list_streams_pagination_backcompat
 from awscli.customizations.quicksight import \
@@ -100,9 +106,11 @@ from awscli.customizations.quicksight import \
 
 def awscli_initialize(event_handlers):
     event_handlers.register('session-initialized', register_uri_param_handler)
+    event_handlers.register('session-initialized', add_binary_formatter)
+    event_handlers.register('session-initialized', no_pager_handler)
     param_shorthand = ParamShorthandParser()
     event_handlers.register('process-cli-arg', param_shorthand)
-    # The s3 error message needs to registered before the
+    # The s3 error mesage needs to registered before the
     # generic error handler.
     register_s3_error_msg(event_handlers)
 #    # The following will get fired for every option we are
@@ -116,7 +124,7 @@ def awscli_initialize(event_handlers):
 #                            param_shorthand.add_example_fn)
     event_handlers.register('doc-examples.*.*',
                             add_examples)
-    register_cli_input_json(event_handlers)
+    register_cli_input_args(event_handlers)
     event_handlers.register('building-argument-table.*',
                             add_streaming_output_arg)
     register_count_events(event_handlers)
@@ -127,9 +135,9 @@ def awscli_initialize(event_handlers):
     register_secgroup(event_handlers)
     register_bundleinstance(event_handlers)
     s3_plugin_initialize(event_handlers)
+    register_ddb(event_handlers)
     register_runinstances(event_handlers)
     register_removals(event_handlers)
-    register_preview_commands(event_handlers)
     register_rds_modify_split(event_handlers)
     register_rekognition_detect_labels(event_handlers)
     register_add_generate_db_auth_token(event_handlers)
@@ -149,6 +157,7 @@ def awscli_initialize(event_handlers):
     emrcontainers_initialize(event_handlers)
     eks_initialize(event_handlers)
     ecs_initialize(event_handlers)
+    lightsail_initialize(event_handlers)
     register_cloudsearchdomain(event_handlers)
     register_generate_cli_skeleton(event_handlers)
     register_assume_role_provider(event_handlers)
@@ -157,7 +166,7 @@ def awscli_initialize(event_handlers):
     register_subscribe(event_handlers)
     register_get_status(event_handlers)
     register_rename_config(event_handlers)
-    register_scalar_parser(event_handlers)
+    register_timestamp_format(event_handlers)
     opsworks_init(event_handlers)
     register_lambda_create_function(event_handlers)
     register_fix_kms_create_grant_docs(event_handlers)
@@ -177,8 +186,6 @@ def awscli_initialize(event_handlers):
     register_ec2_page_size_injector(event_handlers)
     cloudformation_init(event_handlers)
     register_alias_opsworks_cm(event_handlers)
-    register_alias_mturk_command(event_handlers)
-    register_alias_sagemaker_runtime_command(event_handlers)
     register_servicecatalog_commands(event_handlers)
     register_translate_import_terminology(event_handlers)
     register_history_mode(event_handlers)
@@ -186,8 +193,12 @@ def awscli_initialize(event_handlers):
     register_event_stream_arg(event_handlers)
     dlm_initialize(event_handlers)
     register_ssm_session(event_handlers)
-    register_sms_voice_hide(event_handlers)
+    register_logs_commands(event_handlers)
+    register_dev_commands(event_handlers)
+    register_wizard_commands(event_handlers)
+    register_sso_commands(event_handlers)
     register_dynamodb_paginator_fix(event_handlers)
-    register_override_ssl_common_name(event_handlers)
+    register_alias_commands(event_handlers)
     register_kinesis_list_streams_pagination_backcompat(event_handlers)
     register_quicksight_asset_bundle_customizations(event_handlers)
+    register_ec2_instance_connect_commands(event_handlers)

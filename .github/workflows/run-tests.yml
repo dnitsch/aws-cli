@@ -1,3 +1,4 @@
+
 name: Run tests
 
 on:
@@ -12,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
         os: [ubuntu-latest, macOS-latest, windows-latest]
 
     steps:
@@ -24,12 +25,13 @@ jobs:
     - name: Install dependencies
       run: |
         python scripts/ci/install
-        python scripts/ci/install-check
     - name: Run tests
       run: python scripts/ci/run-tests --with-cov
-    - name: Run checks
-      run: python scripts/ci/run-check
+    - name: Run backend tests
+      run: |
+        pip uninstall -y awscli
+        python scripts/ci/run-backend-tests
     - name: codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v2
       with:
         directory: tests

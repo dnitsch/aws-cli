@@ -10,15 +10,20 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import json
+
+import mock
 import tempfile
 import six
+from mock import patch, Mock, MagicMock, call
 import collections
 
-from awscli.testutils import mock, unittest
 from awscli.customizations.cloudformation.deploy import DeployCommand
 from awscli.customizations.cloudformation.deployer import Deployer
 from awscli.customizations.cloudformation.yamlhelper import yaml_parse
 from awscli.customizations.cloudformation import exceptions
+from awscli.customizations.exceptions import ParamValidationError
+from tests.unit.customizations.cloudformation import BaseYAMLTest
 
 
 class FakeArgs(object):
@@ -41,9 +46,10 @@ def get_example_template():
 
 ChangeSetResult = collections.namedtuple("ChangeSetResult", ["changeset_id", "changeset_type"])
 
-class TestDeployCommand(unittest.TestCase):
+class TestDeployCommand(BaseYAMLTest):
 
     def setUp(self):
+        super(TestDeployCommand, self).setUp()
         self.session = mock.Mock()
         self.session.get_scoped_config.return_value = {}
         self.parsed_args = FakeArgs(template_file='./foo',
@@ -66,12 +72,12 @@ class TestDeployCommand(unittest.TestCase):
                                        verify_ssl=None)
         self.deploy_command = DeployCommand(self.session)
 
-        self.deployer = Deployer(mock.Mock())
-        self.deployer.create_and_wait_for_changeset = mock.Mock()
-        self.deployer.execute_changeset = mock.Mock()
-        self.deployer.wait_for_execute = mock.Mock()
+        self.deployer = Deployer(Mock())
+        self.deployer.create_and_wait_for_changeset = Mock()
+        self.deployer.execute_changeset = Mock()
+        self.deployer.wait_for_execute = Mock()
 
-    @mock.patch("awscli.customizations.cloudformation.deploy.yaml_parse")
+    @patch("awscli.customizations.cloudformation.deploy.yaml_parse")
     def test_command_invoked(self, mock_yaml_parse):
         """
         Tests that deploy method is invoked when command is run
@@ -87,26 +93,25 @@ class TestDeployCommand(unittest.TestCase):
 
             open_mock = mock.mock_open()
             # Patch the file open method to return template string
-            with mock.patch(
-                    "awscli.customizations.cloudformation.deploy.open",
+            with patch(
+                    "awscli.customizations.cloudformation.deploy.compat_open",
                     open_mock(read_data=template_str)) as open_mock:
 
                 fake_template = get_example_template()
                 mock_yaml_parse.return_value = fake_template
 
-                self.deploy_command.deploy = mock.MagicMock()
+                self.deploy_command.deploy = MagicMock()
                 self.deploy_command.deploy.return_value = 0
-                self.deploy_command.parse_key_value_arg = mock.Mock()
+                self.deploy_command.parse_key_value_arg = Mock()
                 self.deploy_command.parse_key_value_arg.side_effect = [
                     fake_parameter_overrides, fake_tags_dict]
-                self.deploy_command.merge_parameters = mock.MagicMock(
+                self.deploy_command.merge_parameters = MagicMock(
                         return_value=fake_parameters)
 
                 self.parsed_args.template_file = file_path
                 result = self.deploy_command._run_main(self.parsed_args,
                                               parsed_globals=self.parsed_globals)
                 self.assertEqual(0, result)
-
                 open_mock.assert_called_once_with(file_path, "r")
 
                 self.deploy_command.deploy.assert_called_once_with(
@@ -125,11 +130,11 @@ class TestDeployCommand(unittest.TestCase):
                 )
 
                 self.deploy_command.parse_key_value_arg.assert_has_calls([
-                    mock.call(
+                    call(
                         self.parsed_args.parameter_overrides,
                          "parameter-overrides"
                     ),
-                    mock.call(
+                    call(
                         self.parsed_args.tags,
                         "tags"
                     )
@@ -146,9 +151,30 @@ class TestDeployCommand(unittest.TestCase):
             result = self.deploy_command._run_main(self.parsed_args,
                                                   parsed_globals=self.parsed_globals)
 
-    @mock.patch('awscli.customizations.cloudformation.deploy.os.path.isfile')
-    @mock.patch('awscli.customizations.cloudformation.deploy.yaml_parse')
-    @mock.patch('awscli.customizations.cloudformation.deploy.os.path.getsize')
+    @patch('awscli.customizations.cloudformation.deploy.os.path.expanduser')
+    def test_expands_user_for_template_file(self, expanduser):
+        contents = (
+            'Resource:\n'
+            '  Test:\n'
+            '    Type: AWS::Foo::Bar\n'
+        )
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(contents)
+            f.flush()
+            fake_expanduser_path = f.name + '.expanduser-file'
+            with open(fake_expanduser_path, 'w') as f:
+                f.write(contents)
+        # The tempfile is now gone so if we weren't using os.path.expanduser()
+        # in the code, this test would fail to load the file with an
+        # InvalidTemplatePathError.
+        expanduser.return_value = fake_expanduser_path
+        parsed, template_str, _ = self.deploy_command.load_template_file(f.name)
+        self.assertEqual(parsed, {'Resource': {'Test': {'Type': 'AWS::Foo::Bar'}}})
+        self.assertEqual(template_str, contents)
+
+    @patch('awscli.customizations.cloudformation.deploy.os.path.isfile')
+    @patch('awscli.customizations.cloudformation.deploy.yaml_parse')
+    @patch('awscli.customizations.cloudformation.deploy.os.path.getsize')
     def test_s3_upload_required_but_missing_bucket(self, mock_getsize, mock_yaml_parse, mock_isfile):
         """
         Tests that large templates are detected prior to deployment
@@ -160,18 +186,18 @@ class TestDeployCommand(unittest.TestCase):
         mock_yaml_parse.return_value = template_str
         open_mock = mock.mock_open()
 
-        with mock.patch(
-                "awscli.customizations.cloudformation.deploy.open",
+        with patch(
+                "awscli.customizations.cloudformation.deploy.compat_open",
                 open_mock(read_data=template_str)) as open_mock:
             with self.assertRaises(exceptions.DeployBucketRequiredError):
                 result = self.deploy_command._run_main(self.parsed_args,
                                 parsed_globals=self.parsed_globals)
 
-    @mock.patch('awscli.customizations.cloudformation.deploy.os.path.isfile')
-    @mock.patch('awscli.customizations.cloudformation.deploy.yaml_parse')
-    @mock.patch('awscli.customizations.cloudformation.deploy.os.path.getsize')
-    @mock.patch('awscli.customizations.cloudformation.deploy.DeployCommand.deploy')
-    @mock.patch('awscli.customizations.cloudformation.deploy.S3Uploader')
+    @patch('awscli.customizations.cloudformation.deploy.os.path.isfile')
+    @patch('awscli.customizations.cloudformation.deploy.yaml_parse')
+    @patch('awscli.customizations.cloudformation.deploy.os.path.getsize')
+    @patch('awscli.customizations.cloudformation.deploy.DeployCommand.deploy')
+    @patch('awscli.customizations.cloudformation.deploy.S3Uploader')
     def test_s3_uploader_is_configured_properly(self, s3UploaderMock,
         deploy_method_mock, mock_getsize, mock_yaml_parse, mock_isfile):
         """
@@ -185,12 +211,12 @@ class TestDeployCommand(unittest.TestCase):
         mock_yaml_parse.return_value = template_str
         open_mock = mock.mock_open()
 
-        with mock.patch(
-                "awscli.customizations.cloudformation.deploy.open",
+        with patch(
+                "awscli.customizations.cloudformation.deploy.compat_open",
                 open_mock(read_data=template_str)) as open_mock:
 
             self.parsed_args.s3_bucket = bucket_name
-            s3UploaderObject = mock.Mock()
+            s3UploaderObject = Mock()
             s3UploaderMock.return_value = s3UploaderObject
 
             result = self.deploy_command._run_main(self.parsed_args,
@@ -345,7 +371,7 @@ class TestDeployCommand(unittest.TestCase):
             self.deploy_command.deploy(
                 self.deployer, stack_name, template, parameters, capabilities,
                 execute_changeset, role_arn, notification_arns,
-                None, tags)
+                None, tags, fail_on_empty_changeset=True)
 
     def test_deploy_does_not_raise_exception_on_empty_changeset(self):
         stack_name = "stack_name"
@@ -366,6 +392,24 @@ class TestDeployCommand(unittest.TestCase):
             fail_on_empty_changeset=False
         )
 
+    def test_deploy_empty_changeset_does_not_raise_exception_by_default(self):
+        stack_name = "stack_name"
+        parameters = ["a", "b"]
+        template = "cloudformation template"
+        capabilities = ["foo", "bar"]
+        execute_changeset = True
+        role_arn = "arn:aws:iam::1234567890:role"
+        notification_arns = ["arn:aws:sns:region:1234567890:notify"]
+
+        empty_changeset = exceptions.ChangeEmptyError(stack_name=stack_name)
+        changeset_func = self.deployer.create_and_wait_for_changeset
+        changeset_func.side_effect = empty_changeset
+        self.deploy_command.deploy(
+            self.deployer, stack_name, template, parameters, capabilities,
+            execute_changeset, role_arn, notification_arns,
+            s3_uploader=None, tags=[]
+        )
+
     def test_parse_key_value_arg_success(self):
         """
         Tests that we can parse parameter arguments provided in proper format
@@ -382,6 +426,105 @@ class TestDeployCommand(unittest.TestCase):
         # Empty input should return empty output
         result = self.deploy_command.parse_key_value_arg([], argname)
         self.assertEqual(result, {})
+
+    def test_parse_parameter_override_with_cf_data_format(self):
+        """
+        Tests that we can parse parameter arguments from file in
+        CloudFormation parameters file format
+        :return:
+        """
+        data = json.dumps([
+            {'ParameterKey': 'Key1',
+             'ParameterValue': 'Value1'},
+            {'ParameterKey': 'Key2',
+             'ParameterValue': '[1,2,3]'},
+            {'ParameterKey': 'Key3',
+             'ParameterValue': '{"a":"val", "b": 2}'}
+        ])
+        output = {"Key1": "Value1",
+                  "Key2": '[1,2,3]',
+                  "Key3": '{"a":"val", "b": 2}'}
+        result = self.deploy_command.parse_parameter_overrides(data)
+        self.assertEqual(result, output)
+
+    def test_validate_parameter_override_with_cf_data_format(self):
+        """
+        Tests that we through exception if have redundant keys in json
+        CloudFormation parameters file format
+        :return:
+        """
+        data = json.dumps([
+            {'ParameterKey': 'Key1',
+             'ParameterValue': 'Value1',
+             'RedundantKey': 'foo'}
+        ])
+        with self.assertRaises(ParamValidationError):
+            self.deploy_command.parse_parameter_overrides(data)
+
+    def test_parse_parameter_override_with_codepipeline_data_format(self):
+        """
+        Tests that we can parse parameter arguments from file in
+        CodePipeline parameters file format
+        :return:
+        """
+        data = json.dumps({
+            'Parameters': {
+                "Key1": "Value1",
+                "Key2": '[1,2,3]',
+                "Key3": '{"a":"val", "b": 2}'
+            }
+        })
+        output = {"Key1": "Value1",
+                  "Key2": '[1,2,3]',
+                  "Key3": '{"a":"val", "b": 2}'}
+        result = self.deploy_command.parse_parameter_overrides(data)
+        self.assertEqual(result, output)
+
+    def test_parse_parameter_override_with_deploy_data_format_from_file(self):
+        """
+        Tests that we can parse parameter arguments from file in
+        deploy command parameters file format
+        :return:
+        """
+        data = json.dumps([
+            'Key1=Value1',
+            'Key2=[1,2,3]',
+            'Key3={"a":"val", "b": 2}'
+        ])
+        output = {"Key1": "Value1",
+                  "Key2": '[1,2,3]',
+                  "Key3": '{"a":"val", "b": 2}'}
+        result = self.deploy_command.parse_parameter_overrides(data)
+        self.assertEqual(result, output)
+
+    def test_parse_parameter_override_with_inline_json(self):
+        data = [json.dumps([
+            'Key1=Value1',
+            'Key2=[1,2,3]',
+            'Key3={"a":"val", "b": 2}'
+        ])]
+        output = {"Key1": "Value1",
+                  "Key2": '[1,2,3]',
+                  "Key3": '{"a":"val", "b": 2}'}
+        result = self.deploy_command.parse_parameter_overrides(data)
+        self.assertEqual(result, output)
+
+    def test_parse_parameter_override_with_deploy_data_format(self):
+        """
+        Tests that we can parse parameter arguments in
+        deploy command parameters command line format
+        :return:
+        """
+        data = [
+            'Key1=Value1',
+            'Key2=[1,2,3]',
+            'Key3={"a":"val", "b": 2}'
+        ]
+        output = {"Key1": "Value1",
+                  "Key2": '[1,2,3]',
+                  "Key3": '{"a":"val", "b": 2}'}
+        result = self.deploy_command.parse_parameter_overrides(data)
+        self.assertEqual(result, output)
 
     def test_parse_key_value_arg_invalid_input(self):
         # non-list input
@@ -415,14 +558,14 @@ class TestDeployCommand(unittest.TestCase):
         }
 
         expected_result = [
-            # Overridden values
+            # Overriden values
             {"ParameterKey": "Key1", "ParameterValue": "Value1"},
             {"ParameterKey": "Key3", "ParameterValue": "Value3"},
 
             # Parameter contains default value, but overridden with new value
             {"ParameterKey": "KeyWithDefaultValueButOverridden", "ParameterValue": "Value4"},
 
-            # non-overridden values
+            # non-overriden values
             {"ParameterKey": "Key2", "UsePreviousValue": True},
             {"ParameterKey": "Key4", "UsePreviousValue": True},
 

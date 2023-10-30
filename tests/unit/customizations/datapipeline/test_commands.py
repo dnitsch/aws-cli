@@ -13,9 +13,10 @@
 # language governing permissions and limitations under the License.
 
 import copy
+import mock
 import unittest
 
-from awscli.testutils import mock, BaseAWSHelpOutputTest, BaseAWSCommandParamsTest
+from awscli.testutils import BaseAWSHelpOutputTest, BaseAWSCommandParamsTest
 
 from awscli.customizations.datapipeline import convert_described_objects
 from awscli.customizations.datapipeline import ListRunsCommand
@@ -186,6 +187,7 @@ class TestCommandsRunProperly(BaseAWSCommandParamsTest):
         self.client.describe_objects = self.describe_objects
 
         self.driver.session = mock.Mock()
+        self.driver.session.user_agent_extra = ''
         self.driver.session.emit_first_non_none_response.return_value = None
         self.driver.session.create_client.return_value = self.client
         self.query_objects.paginate.return_value.build_full_result.\

@@ -22,6 +22,9 @@ from awscli.compat import six
 from awscli.compat import queue
 from awscli.customizations.commands import BasicCommand
 from awscli.customizations.s3.comparator import Comparator
+from awscli.customizations.s3.factory import (
+    ClientFactory, TransferManagerFactory
+)
 from awscli.customizations.s3.fileinfobuilder import FileInfoBuilder
 from awscli.customizations.s3.fileformat import FileFormat
 from awscli.customizations.s3.filegenerator import FileGenerator
@@ -35,6 +38,7 @@ from awscli.customizations.utils import uni_print
 from awscli.customizations.s3.syncstrategy.base import MissingFileSync, \
     SizeAndLastModifiedSync, NeverSync
 from awscli.customizations.s3 import transferconfig
+from awscli.customizations.exceptions import ParamValidationError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -318,10 +322,9 @@ METADATA = {
     },
     'help_text': (
         "A map of metadata to store with the objects in S3. This will be "
-        "applied to every object which is part of this request. In a sync, this "
-        "means that files which haven't changed won't receive the new metadata. "
-        "When copying between two s3 locations, the metadata-directive "
-        "argument will default to 'REPLACE' unless otherwise specified."
+        "applied to every object which is part of this request. In a sync, "
+        "this means that files which haven't changed won't receive the new "
+        "metadata. "
     )
 }
 
@@ -329,22 +332,49 @@ METADATA = {
 METADATA_DIRECTIVE = {
     'name': 'metadata-directive', 'choices': ['COPY', 'REPLACE'],
     'help_text': (
-        'Specifies whether the metadata is copied from the source object '
-        'or replaced with metadata provided when copying S3 objects. '
-        'Note that if the object is copied over in parts, the source '
-        'object\'s metadata will not be copied over, no matter the value for '
-        '``--metadata-directive``, and instead the desired metadata values '
-        'must be specified as parameters on the command line. '
-        'Valid values are ``COPY`` and ``REPLACE``. If this parameter is not '
-        'specified, ``COPY`` will be used by default. If ``REPLACE`` is used, '
-        'the copied object will only have the metadata values that were'
-        ' specified by the CLI command. Note that if you are '
-        'using any of the following parameters: ``--content-type``, '
-        '``content-language``, ``--content-encoding``, '
-        '``--content-disposition``, ``--cache-control``, or ``--expires``, you '
-        'will need to specify ``--metadata-directive REPLACE`` for '
-        'non-multipart copies if you want the copied objects to have the '
-        'specified metadata values.')
+        'Sets the ``x-amz-metadata-directive`` header for CopyObject '
+        'operations. It is recommended to use the ``--copy-props`` parameter '
+        'instead to control copying of metadata properties. '
+        'If ``--metadata-directive`` is set, the ``--copy-props`` parameter '
+        'will be disabled and will have no affect on the transfer.'
+    )
+}
+
+
+COPY_PROPS = {
+    'name': 'copy-props',
+    'choices': ['none', 'metadata-directive', 'default'],
+    'default': 'default', 'help_text': (
+        'Determines which properties are copied from the source S3 object. '
+        'This parameter only applies for S3 to S3 copies. Valid values are: '
+        '<ul>'
+        '<li>``none`` - Do not copy any of the properties from the source '
+        'S3 object.</li>'
+        '<li>``metadata-directive`` - Copies the following properties from '
+        'the source S3 object: '
+        '``content-type``, ``content-language``, ``content-encoding``, '
+        '``content-disposition``, ``cache-control``, ``--expires``, and '
+        '``metadata``</li>'
+        '<li>``default`` - The default value. Copies tags and properties '
+        'covered under the ``metadata-directive`` value from the '
+        'source S3 object.</li>'
+        '</ul>'
+        'In order to copy the appropriate properties for multipart copies, '
+        'some of the options may require additional API calls if a multipart '
+        'copy is involved. Specifically:'
+        '<ul>'
+        '<li>``metadata-directive`` may require additional ``HeadObject`` '
+        'API calls.</li>'
+        '<li>``default`` may require additional ``HeadObject``, '
+        '``GetObjectTagging``, and ``PutObjectTagging`` API calls. Note this'
+        ' list of API calls may grow in the future in order to ensure '
+        'multipart copies preserve the exact properties a ``CopyObject`` '
+        'API call would preserve.</li>'
+        '</ul>'
+        'If you want to guarantee no additional API calls are made other than '
+        'than the ones needed to perform the actual copy, set this option to '
+        '``none``.'
+    )
 }
 
 
@@ -440,17 +470,14 @@ TRANSFER_ARGS = [DRYRUN, QUIET, INCLUDE, EXCLUDE, ACL,
                  REQUEST_PAYER]
 
 
-def get_client(session, region, endpoint_url, verify, config=None):
-    return session.create_client('s3', region_name=region,
-                                 endpoint_url=endpoint_url, verify=verify,
-                                 config=config)
-
-
 class S3Command(BasicCommand):
     def _run_main(self, parsed_args, parsed_globals):
-        self.client = get_client(self._session, parsed_globals.region,
-                                 parsed_globals.endpoint_url,
-                                 parsed_globals.verify_ssl)
+        params = {
+            'region': parsed_globals.region,
+            'endpoint_url': parsed_globals.endpoint_url,
+            'verify_ssl': parsed_globals.verify_ssl,
+        }
+        self.client = ClientFactory(self._session).create_client(params)
 
 
 class ListCommand(S3Command):
@@ -636,7 +663,7 @@ class WebsiteCommand(S3Command):
         # bucketname
         #
         # We also strip off the trailing slash if a user
-        # accidentally appends a slash.
+        # accidently appends a slash.
         if path.startswith('s3://'):
             path = path[5:]
         if path.endswith('/'):
@@ -650,8 +677,8 @@ class PresignCommand(S3Command):
     DESCRIPTION = (
         "Generate a pre-signed URL for an Amazon S3 object. This allows "
         "anyone who receives the pre-signed URL to retrieve the S3 object "
-        "with an HTTP GET request. For sigv4 requests the region needs to be "
-        "configured explicitly."
+        "with an HTTP GET request. All presigned URL's now use sigv4 "
+        "so the region needs to be configured explicitly."
     )
     USAGE = "<S3Uri>"
     ARG_TABLE = [{'name': 'path',
@@ -660,7 +687,7 @@ class PresignCommand(S3Command):
                   'cli_type_name': 'integer',
                   'help_text': (
                       'Number of seconds until the pre-signed '
-                      'URL expires.  Default is 3600 seconds.')}]
+                      'URL expires.  Default is 3600 seconds. Maximum is 604800 seconds.')}]
 
     def _run_main(self, parsed_args, parsed_globals):
         super(PresignCommand, self)._run_main(parsed_args, parsed_globals)
@@ -682,32 +709,20 @@ class S3TransferCommand(S3Command):
     def _run_main(self, parsed_args, parsed_globals):
         super(S3TransferCommand, self)._run_main(parsed_args, parsed_globals)
         self._convert_path_args(parsed_args)
-        params = self._build_call_parameters(parsed_args, {})
-        cmd_params = CommandParameters(self.NAME, params,
-                                       self.USAGE)
-        cmd_params.add_region(parsed_globals)
-        cmd_params.add_endpoint_url(parsed_globals)
-        cmd_params.add_verify_ssl(parsed_globals)
-        cmd_params.add_page_size(parsed_args)
-        cmd_params.add_paths(parsed_args.paths)
-
-        runtime_config = transferconfig.RuntimeConfig().build_config(
-            **self._session.get_scoped_config().get('s3', {}))
-        cmd = CommandArchitecture(self._session, self.NAME,
-                                  cmd_params.parameters,
-                                  runtime_config)
-        cmd.set_clients()
+        params = self._get_params(parsed_args, parsed_globals)
+        source_client, transfer_client = self._get_source_and_transfer_clients(
+            params=params
+        )
+        transfer_manager = self._get_transfer_manager(
+            params=params,
+            botocore_transfer_client=transfer_client
+        )
+        cmd = CommandArchitecture(
+            self._session, self.NAME, params,
+            transfer_manager, source_client, transfer_client
+        )
         cmd.create_instructions()
         return cmd.run()
-
-    def _build_call_parameters(self, args, command_params):
-        """
-        This takes all of the commands in the name space and puts them
-        into a dictionary
-        """
-        for name, value in vars(args).items():
-            command_params[name] = value
-        return command_params
 
     def _convert_path_args(self, parsed_args):
         if not isinstance(parsed_args.paths, list):
@@ -720,6 +735,36 @@ class S3TransferCommand(S3Command):
                 new_path = enc_path.decode('utf-8')
                 parsed_args.paths[i] = new_path
 
+    def _get_params(self, parsed_args, parsed_globals):
+        cmd_params = CommandParameters(
+            self.NAME, vars(parsed_args), self.USAGE)
+        cmd_params.add_region(parsed_globals)
+        cmd_params.add_endpoint_url(parsed_globals)
+        cmd_params.add_verify_ssl(parsed_globals)
+        cmd_params.add_sign_request(parsed_globals)
+        cmd_params.add_page_size(parsed_args)
+        cmd_params.add_paths(parsed_args.paths)
+        return cmd_params.parameters
+
+    def _get_source_and_transfer_clients(self, params):
+        client_factory = ClientFactory(self._session)
+        source_client = client_factory.create_client(
+            params, is_source_client=True)
+        transfer_client = client_factory.create_client(params)
+        return source_client, transfer_client
+
+    def _get_transfer_manager(self, params, botocore_transfer_client):
+        runtime_config = self._get_runtime_config()
+        return TransferManagerFactory(self._session).create_transfer_manager(
+            params=params,
+            runtime_config=runtime_config,
+            botocore_client=botocore_transfer_client,
+        )
+
+    def _get_runtime_config(self):
+        return transferconfig.RuntimeConfig().build_config(
+            **self._session.get_scoped_config().get('s3', {}))
+
 
 class CpCommand(S3TransferCommand):
     NAME = 'cp'
@@ -729,7 +774,8 @@ class CpCommand(S3TransferCommand):
             "or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
                   'synopsis': USAGE}] + TRANSFER_ARGS + \
-                [METADATA, METADATA_DIRECTIVE, EXPECTED_SIZE, RECURSIVE]
+                [METADATA, COPY_PROPS, METADATA_DIRECTIVE, EXPECTED_SIZE,
+                 RECURSIVE]
 
 
 class MvCommand(S3TransferCommand):
@@ -740,7 +786,8 @@ class MvCommand(S3TransferCommand):
             "or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
                   'synopsis': USAGE}] + TRANSFER_ARGS +\
-                [METADATA, METADATA_DIRECTIVE, RECURSIVE]
+                [METADATA, COPY_PROPS, METADATA_DIRECTIVE, RECURSIVE]
+
 
 class RmCommand(S3TransferCommand):
     NAME = 'rm'
@@ -761,7 +808,7 @@ class SyncCommand(S3TransferCommand):
             "<LocalPath> or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
                   'synopsis': USAGE}] + TRANSFER_ARGS + \
-                [METADATA, METADATA_DIRECTIVE]
+                [METADATA, COPY_PROPS, METADATA_DIRECTIVE]
 
 
 class MbCommand(S3Command):
@@ -774,7 +821,9 @@ class MbCommand(S3Command):
         super(MbCommand, self)._run_main(parsed_args, parsed_globals)
 
         if not parsed_args.path.startswith('s3://'):
-            raise TypeError("%s\nError: Invalid argument type" % self.USAGE)
+            raise ParamValidationError(
+                "%s\nError: Invalid argument type" % self.USAGE
+            )
         bucket, _ = split_s3_bucket_key(parsed_args.path)
 
         bucket_config = {'LocationConstraint': self.client.meta.region_name}
@@ -812,12 +861,16 @@ class RbCommand(S3Command):
         super(RbCommand, self)._run_main(parsed_args, parsed_globals)
 
         if not parsed_args.path.startswith('s3://'):
-            raise TypeError("%s\nError: Invalid argument type" % self.USAGE)
+            raise ParamValidationError(
+                "%s\nError: Invalid argument type" % self.USAGE
+            )
         bucket, key = split_s3_bucket_key(parsed_args.path)
 
         if key:
-            raise ValueError('Please specify a valid bucket name only.'
-                             ' E.g. s3://%s' % bucket)
+            raise ParamValidationError(
+                'Please specify a valid bucket name only. '
+                'E.g. s3://%s' % bucket
+            )
 
         if parsed_args.force:
             self._force(parsed_args.path, parsed_globals)
@@ -853,44 +906,15 @@ class CommandArchitecture(object):
     list of instructions to wire together an assortment of generators to
     perform the command.
     """
-    def __init__(self, session, cmd, parameters, runtime_config=None):
+    def __init__(self, session, cmd, parameters, transfer_manager,
+                 source_client, transfer_client):
         self.session = session
         self.cmd = cmd
         self.parameters = parameters
         self.instructions = []
-        self._runtime_config = runtime_config
-        self._endpoint = None
-        self._source_endpoint = None
-        self._client = None
-        self._source_client = None
-
-    def set_clients(self):
-        client_config = None
-        if self.parameters.get('sse') == 'aws:kms':
-            client_config = Config(signature_version='s3v4')
-        self._client = get_client(
-            self.session,
-            region=self.parameters['region'],
-            endpoint_url=self.parameters['endpoint_url'],
-            verify=self.parameters['verify_ssl'],
-            config=client_config
-        )
-        self._source_client = get_client(
-            self.session,
-            region=self.parameters['region'],
-            endpoint_url=self.parameters['endpoint_url'],
-            verify=self.parameters['verify_ssl'],
-            config=client_config
-        )
-        if self.parameters['source_region']:
-            if self.parameters['paths_type'] == 's3s3':
-                self._source_client = get_client(
-                    self.session,
-                    region=self.parameters['source_region'],
-                    endpoint_url=None,
-                    verify=self.parameters['verify_ssl'],
-                    config=client_config
-                )
+        self._transfer_manager = transfer_manager
+        self._source_client = source_client
+        self._client = transfer_client
 
     def create_instructions(self):
         """
@@ -1014,9 +1038,8 @@ class CommandArchitecture(object):
         file_info_builder = FileInfoBuilder(
             self._client, self._source_client, self.parameters)
 
-        s3_transfer_handler = S3TransferHandlerFactory(
-            self.parameters, self._runtime_config)(
-                self._client, result_queue)
+        s3_transfer_handler = S3TransferHandlerFactory(self.parameters)(
+            self._transfer_manager, result_queue)
 
         sync_strategies = self.choose_sync_strategies()
 
@@ -1117,6 +1140,16 @@ class CommandArchitecture(object):
             )
 
 
+# TODO: This class is fairly quirky in the sense that it is both a builder
+#  and a data object. In the future we should make the following refactorings
+#  to the class:
+#    1. Hoist all of the building logic into a builder/factory class that
+#    builds the parameters that will be passed around to all of the
+#    abstractions used by the S3 commands
+#    2. Make the CommandParameters class a dataclass that properly defines
+#    the various valid parameters. The difficult part right now is the
+#    parameters property right now is a dictionary that holds arbitrary
+#    key/value pairs making it difficult to know what is supported.
 class CommandParameters(object):
     """
     This class is used to do some initial error based on the
@@ -1171,7 +1204,7 @@ class CommandParameters(object):
         self.parameters['is_stream'] = False
         if self.parameters['src'] == '-' or self.parameters['dest'] == '-':
             if self.cmd != 'cp' or self.parameters.get('dir_op'):
-                raise ValueError(
+                raise ParamValidationError(
                     "Streaming currently is only compatible with "
                     "non-recursive cp commands"
                 )
@@ -1183,7 +1216,8 @@ class CommandParameters(object):
         # If we're using a mv command, you can't copy the object onto itself.
         params = self.parameters
         if self.cmd == 'mv' and self._same_path(params['src'], params['dest']):
-            raise ValueError("Cannot mv a file onto itself: '%s' - '%s'" % (
+            raise ParamValidationError(
+                "Cannot mv a file onto itself: '%s' - '%s'" % (
                 params['src'], params['dest']))
 
         # If the user provided local path does not exist, hard fail because
@@ -1241,7 +1275,9 @@ class CommandParameters(object):
         if self.cmd in template_type[paths_type]:
             self.parameters['paths_type'] = paths_type
         else:
-            raise TypeError("%s\nError: Invalid argument type" % usage)
+            raise ParamValidationError(
+                "%s\nError: Invalid argument type" % usage
+            )
 
     def add_region(self, parsed_globals):
         self.parameters['region'] = parsed_globals.region
@@ -1259,6 +1295,10 @@ class CommandParameters(object):
     def add_verify_ssl(self, parsed_globals):
         self.parameters['verify_ssl'] = parsed_globals.verify_ssl
 
+    def add_sign_request(self, parsed_globals):
+        self.parameters['sign_request'] = getattr(
+            parsed_globals, 'sign_request', True)
+
     def add_page_size(self, parsed_args):
         self.parameters['page_size'] = getattr(parsed_args, 'page_size', None)
 
@@ -1273,21 +1313,21 @@ class CommandParameters(object):
         sse_c_key_type_param = '--' + sse_c_key_type.replace('_', '-')
         if self.parameters.get(sse_c_type):
             if not self.parameters.get(sse_c_key_type):
-                raise ValueError(
-                    'It %s is specified, %s must be specified '
+                raise ParamValidationError(
+                    'If %s is specified, %s must be specified '
                     'as well.' % (sse_c_type_param, sse_c_key_type_param)
                 )
         if self.parameters.get(sse_c_key_type):
             if not self.parameters.get(sse_c_type):
-                raise ValueError(
-                    'It %s is specified, %s must be specified '
+                raise ParamValidationError(
+                    'If %s is specified, %s must be specified '
                     'as well.' % (sse_c_key_type_param, sse_c_type_param)
                 )
 
     def _validate_sse_c_copy_source_for_paths(self):
         if self.parameters.get('sse_c_copy_source'):
             if self.parameters['paths_type'] != 's3s3':
-                raise ValueError(
+                raise ParamValidationError(
                     '--sse-c-copy-source is only supported for '
                     'copy operations.'
                 )

@@ -10,9 +10,9 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock
-from awscli.testutils import BaseAWSPreviewCommandParamsTest as \
-    BaseAWSCommandParamsTest
+import mock
+
+from awscli.testutils import BaseAWSCommandParamsTest
 
 
 class TestCreateInvalidation(BaseAWSCommandParamsTest):
@@ -45,7 +45,7 @@ class TestCreateInvalidation(BaseAWSCommandParamsTest):
 
     def test_invalidation_batch_and_paths(self):
         cmdline = self.prefix + '--invalidation-batch {} --paths foo'
-        self.run_cmd(cmdline, expected_rc=255)
+        self.run_cmd(cmdline, expected_rc=252)
 
     def test_neither_invalidation_batch_or_paths(self):
-        self.run_cmd(self.prefix, expected_rc=255)
+        self.run_cmd(self.prefix, expected_rc=252)

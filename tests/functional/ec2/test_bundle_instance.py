@@ -14,11 +14,12 @@
 import base64
 import datetime
 
+import mock
 from six.moves import cStringIO
 
 import awscli.customizations.ec2.bundleinstance
 from awscli.compat import six
-from awscli.testutils import mock, BaseAWSCommandParamsTest
+from awscli.testutils import BaseAWSCommandParamsTest
 
 
 class TestBundleInstance(BaseAWSCommandParamsTest):
@@ -26,9 +27,9 @@ class TestBundleInstance(BaseAWSCommandParamsTest):
     prefix = 'ec2 bundle-instance'
 
     POLICY = (
-        '{"expiration": "2013-08-10T00:00:00.000000Z",'
-        '"conditions": [{"bucket": "mybucket"},{"acl": '
-        '"ec2-bundle-read"},["starts-with", "$key", "foobar"]]}')
+        b'{"expiration": "2013-08-10T00:00:00.000000Z",'
+        b'"conditions": [{"bucket": "mybucket"},{"acl": '
+        b'"ec2-bundle-read"},["starts-with", "$key", "foobar"]]}')
     POLICY_SIGNATURE = 'ynxybUMv9YuGbPl7HZ8AFJW/2t0='
 
     def setUp(self):
@@ -73,7 +74,7 @@ class TestBundleInstance(BaseAWSCommandParamsTest):
         policy_signature = 'a5SmoLOxoM0MHpOdC25nE7KIafg='
         args = ' --instance-id i-12345678 --owner-akid AKIAIOSFODNN7EXAMPLE'
         args += ' --owner-sak wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
-        args += ' --bucket mybucket --prefix foobar --policy %s' % policy
+        args += ' --bucket mybucket --prefix foobar --policy %s' % base64policy
         args_list = (self.prefix + args).split()
         result =  {'InstanceId': 'i-12345678',
                    'Storage': {
@@ -81,7 +82,7 @@ class TestBundleInstance(BaseAWSCommandParamsTest):
                            'Bucket': 'mybucket',
                            'Prefix': 'foobar',
                            'AWSAccessKeyId': 'AKIAIOSFODNN7EXAMPLE',
-                           'UploadPolicy': '{"notarealpolicy":true}',
+                           'UploadPolicy': b'{"notarealpolicy":true}',
                            'UploadPolicySignature': policy_signature}
                        }
                    }
@@ -90,15 +91,7 @@ class TestBundleInstance(BaseAWSCommandParamsTest):
     def test_both(self):
         captured = cStringIO()
         json = """{"S3":{"Bucket":"foobar","Prefix":"fiebaz"}}"""
-        args = ' --instance-id i-12345678 --owner-aki blah --owner-sak blah --storage %s' % json
+        args = ' --instance-id i-12345678 --owner-akid blah --owner-sak blah --storage %s' % json
         args_list = (self.prefix + args).split()
-        _, stderr, _ = self.assert_params_for_cmd(args_list, expected_rc=255)
-        expected_err_msg = (
-            'Mixing the --storage option with the simple, '
-            'scalar options is not recommended'
-        )
-        self.assertIn(expected_err_msg, stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        _, stderr, _ = self.assert_params_for_cmd(args_list, expected_rc=252)
+        self.assertIn('Mixing the --storage option', stderr)

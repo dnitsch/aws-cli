@@ -17,8 +17,12 @@ import tempfile
 import os
 import zipfile
 
+import pytest
+
 from unittest import TestCase
 from awscli.customizations.cloudformation.artifact_exporter import make_zip
+from awscli.customizations.cloudformation.yamlhelper import yaml_dump
+from awscli.customizations.cloudformation.artifact_exporter import Template
 from awscli.testutils import skip_if_windows
 
 
@@ -59,3 +63,38 @@ class TestPackageZipFiles(TestCase):
 
         # Its content should be equal the value we wrote.
         self.assertEqual(data.encode("utf-8"), myfile.read())
+
+
+def _generate_template_cases():
+    test_case_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'deploy_templates'
+    )
+    cases = []
+    for case in os.listdir(test_case_path):
+        case_path = os.path.join(test_case_path, case)
+        cases.append(
+            (
+                os.path.join(case_path, 'input.yml'),
+                os.path.join(case_path, 'output.yml')
+             )
+        )
+    return cases
+
+
+@pytest.mark.parametrize(
+    'input_template,output_template', _generate_template_cases())
+def test_known_templates(input_template, output_template):
+    template = Template(input_template, os.getcwd(), None)
+    exported = template.export()
+    result = yaml_dump(exported)
+    expected = open(output_template, 'r').read()
+
+    assert result == expected, (
+        '\nAcutal template:\n'
+        '%s'
+        '\nDiffers from expected template:\n'
+        '%s' % (
+            result, expected
+        )
+    )

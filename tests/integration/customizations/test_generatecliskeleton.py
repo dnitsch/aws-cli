@@ -10,67 +10,25 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import contextlib
 import os
 import json
 import logging
 
+import mock
 import pytest
+from ruamel.yaml import YAML
 
-from awscli.testutils import mock, unittest, aws, capture_output
 from awscli.clidriver import create_clidriver
-from awscli.customizations.preview import PREVIEW_SERVICES
 
-
-class TestIntegGenerateCliSkeleton(unittest.TestCase):
-    """This tests various services to see if the generated skeleton is correct
-
-    The operations and services selected are arbitrary. Tried to pick
-    operations that do not have many input options for the sake of readablity
-    and maintenance. These are essentially smoke tests. It is not trying to
-    test the different types of input shapes that can be generated in the
-    skeleton. It is only testing wheter the skeleton generator argument works
-    for various services.
-    """
-    def _assert_skeleton_matches(self, actual_skeleton, expected_skeleton):
-        # Assert all expected keys are present, however there may be more
-        # keys in the actual skeleton generated if the API updates
-        for key, value in expected_skeleton.items():
-            self.assertEqual(value, actual_skeleton[key])
-
-    def test_generate_cli_skeleton_s3api(self):
-        p = aws('s3api delete-object --generate-cli-skeleton')
-        self.assertEqual(p.rc, 0)
-        expected_skeleton = {
-            'Bucket': '',
-            'BypassGovernanceRetention': True,
-            'Key': '',
-            'MFA': '',
-            'VersionId': '',
-            'RequestPayer': 'requester',
-        }
-        actual_skeleton = json.loads(p.stdout)
-        self._assert_skeleton_matches(actual_skeleton, expected_skeleton)
-
-    def test_generate_cli_skeleton_sqs(self):
-        p = aws('sqs change-message-visibility --generate-cli-skeleton')
-        self.assertEqual(p.rc, 0)
-        expected_skeleton = {
-            'QueueUrl': '',
-            'ReceiptHandle': '',
-            'VisibilityTimeout': 0,
-        }
-        actual_skeleton = json.loads(p.stdout)
-        self._assert_skeleton_matches(actual_skeleton, expected_skeleton)
-
-    def test_generate_cli_skeleton_iam(self):
-        p = aws('iam create-group --generate-cli-skeleton')
-        self.assertEqual(p.rc, 0)
-        expected_skeleton = {'Path': '', 'GroupName': ''}
-        actual_skeleton = json.loads(p.stdout)
-        self._assert_skeleton_matches(actual_skeleton, expected_skeleton)
-
-
-def _all_commands():
+# NOTE: This should be a standalone pytest fixture.  However, fixtures cannot
+# be used outside of other fixtures or test cases, and it is needed by
+# get_all_cli_skeleton_commands to generate the parameterization cases.
+# So the environ patching logic is extracted out to this general helper
+# context manager that can be used in both case generator and an actual
+# fixture for the tests.
+@contextlib.contextmanager
+def patch_environ():
     environ = {
         'AWS_DATA_PATH': os.environ['AWS_DATA_PATH'],
         'AWS_DEFAULT_REGION': 'us-east-1',
@@ -80,12 +38,24 @@ def _all_commands():
         'AWS_SHARED_CREDENTIALS_FILE': '',
     }
     with mock.patch('os.environ', environ):
+        yield
+
+
+@pytest.fixture
+def clean_environ():
+    with patch_environ():
+        yield
+
+@pytest.fixture
+def yaml_safe_loader():
+    return YAML(typ="safe", pure=True)
+
+def get_all_cli_skeleton_commands():
+    skeleton_commands = []
+    with patch_environ():
         driver = create_clidriver()
         help_command = driver.create_help_command()
         for command_name, command_obj in help_command.command_table.items():
-            if command_name in PREVIEW_SERVICES:
-                # Skip over any preview services for now.
-                continue
             sub_help = command_obj.create_help_command()
             # This avoids command objects like ``PreviewModeCommand`` that
             # do not exhibit any visible functionality (i.e. provides a command
@@ -95,28 +65,43 @@ def _all_commands():
                     op_help = sub_command.create_help_command()
                     arg_table = op_help.arg_table
                     if 'generate-cli-skeleton' in arg_table:
-                        yield command_name, sub_name
+                        skeleton_commands.append(f'{command_name} {sub_name}')
+    return skeleton_commands
 
 
-@pytest.mark.parametrize(
-    "command_name, operation_name",
-    _all_commands()
-)
-def test_can_generate_skeletons_for_all_service_comands(command_name, operation_name):
-    command = '%s %s --generate-cli-skeleton' % (command_name,
-                                                 operation_name)
-    stdout, stderr, _ = _run_cmd(command)
+SKELETON_COMMANDS = get_all_cli_skeleton_commands()
+
+
+@pytest.mark.parametrize('cmd', SKELETON_COMMANDS)
+def test_gen_input_skeleton(cmd, capsys, clean_environ):
+    stdout, stderr, _ = _run_cmd(cmd + ' --generate-cli-skeleton', capsys)
     # Test that a valid JSON blob is emitted to stdout is valid.
     try:
         json.loads(stdout)
-    except ValueError as e:
+    except ValueError:
         raise AssertionError(
-            f"Could not generate CLI skeleton for command: {command_name} "
-            f"{operation_name}\n stdout:\n{stdout}\nstderr:\n{stderr}\n"
+            f"Could not generate CLI skeleton for command: {cmd}\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}\n"
         )
 
 
-def _run_cmd(cmd, expected_rc=0):
+@pytest.mark.parametrize('cmd', SKELETON_COMMANDS)
+def test_gen_yaml_input_skeleton(cmd, capsys, clean_environ, yaml_safe_loader):
+    stdout, stderr, _ = _run_cmd(
+        cmd + ' --generate-cli-skeleton yaml-input', capsys
+    )
+    try:
+        yaml_safe_loader.load(stdout)
+    except ValueError:
+        raise AssertionError(
+            f"Could not generate CLI YAML skeleton for command: {cmd}\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}\n"
+        )
+
+
+def _run_cmd(cmd, capsys, expected_rc=0):
     logging.debug("Calling cmd: %s", cmd)
     # Drivers do not seem to be reusable since the formatters seem to not clear
     # themselves between runs. This is fine in practice since a driver is only
@@ -125,24 +110,17 @@ def _run_cmd(cmd, expected_rc=0):
     # worth seeing if we can make drivers reusable to speed these up generated
     # tests.
     driver = create_clidriver()
-    if not isinstance(cmd, list):
-        cmdlist = cmd.split()
-    else:
-        cmdlist = cmd
-
-    with capture_output() as captured:
-        try:
-            rc = driver.main(cmdlist)
-        except SystemExit as e:
-            # We need to catch SystemExit so that we
-            # can get a proper rc and still present the
-            # stdout/stderr to the test runner so we can
-            # figure out what went wrong.
-            rc = e.code
-    stderr = captured.stderr.getvalue()
-    stdout = captured.stdout.getvalue()
+    try:
+        rc = driver.main(cmd.split())
+    except SystemExit as e:
+        # We need to catch SystemExit so that we
+        # can get a proper rc and still present the
+        # stdout/stderr to the test runner so we can
+        # figure out what went wrong.
+        rc = e.code
+    stdout, stderr = capsys.readouterr()
     assert rc == expected_rc, (
-        "Unexpected rc (expected: %s, actual: %s) for command: %s\n"
-        "stdout:\n%sstderr:\n%s" % (expected_rc, rc, cmd, stdout, stderr)
+        f"Unexpected rc (expected: {expected_rc}, actual: {rc}) "
+        f"for command: {cmd}\nstdout:\n{stdout}stderr:\n{stderr}"
     )
     return stdout, stderr, rc

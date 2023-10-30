@@ -42,8 +42,7 @@ def add_waiters(command_table, session, command_object, **kwargs):
 
 def get_waiter_model_from_service_model(session, service_model):
     try:
-        model = session.get_waiter_model(service_model.service_name,
-                                         service_model.api_version)
+        model = session.get_waiter_model(service_model.service_name)
     except DataNotFoundError:
         return None
     return model
@@ -67,8 +66,8 @@ class WaitCommand(BasicCommand):
 
     def _run_main(self, parsed_args, parsed_globals):
         if parsed_args.subcommand is None:
-            raise ValueError("usage: aws [options] <command> <subcommand> "
-                             "[parameters]\naws: error: too few arguments")
+            self._raise_usage_error()
+        return 0
 
     def _build_subcommand_table(self):
         subcommand_table = super(WaitCommand, self)._build_subcommand_table()

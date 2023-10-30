@@ -10,7 +10,8 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock
+
+import mock
 
 from tests.unit.customizations.emr import EMRBaseAWSCommandParamsTest as \
     BaseAWSCommandParamsTest
@@ -70,7 +71,7 @@ class TestDisableHBaseBackups(BaseAWSCommandParamsTest):
         cmdline = self.prefix + args
         expected_error_msg = '\nShould specify at least one of --full' +\
                              ' and --incremental.\n'
-        result = self.run_cmd(cmdline, 255)
+        result = self.run_cmd(cmdline, 252)
 
         self.assertEqual(expected_error_msg, result[1])
 
@@ -83,7 +84,7 @@ class TestDisableHBaseBackups(BaseAWSCommandParamsTest):
         cmdline = self.prefix + args
         expected_error_msg = ("\naws: error: disable-hbase-backups"
                               " is not supported with 'emr-4.0' release.\n")
-        result = self.run_cmd(cmdline, 255)
+        result = self.run_cmd(cmdline, 252)
 
         self.assertEqual(result[1], expected_error_msg)
 

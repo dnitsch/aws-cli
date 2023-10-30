@@ -10,9 +10,9 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock
-from awscli.testutils import BaseAWSPreviewCommandParamsTest as \
-    BaseAWSCommandParamsTest
+import mock
+
+from awscli.testutils import BaseAWSCommandParamsTest
 
 
 class TestUpdateDistribution(BaseAWSCommandParamsTest):
@@ -94,8 +94,8 @@ class TestUpdateDistribution(BaseAWSCommandParamsTest):
     def test_both_distribution_config_and_default_root_object(self):
         self.assert_params_for_cmd(
             self.prefix + '--distribution-config {} --default-root-object foo',
-            expected_rc=255,
+            expected_rc=252,
             stderr_contains='cannot be specified when one of the following')
 
     def test_no_input(self):
-        self.run_cmd(self.prefix, expected_rc=255)
+        self.run_cmd(self.prefix, expected_rc=252)

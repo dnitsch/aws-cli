@@ -12,7 +12,7 @@
 # language governing permissions and limitations under the License.
 import os
 import platform
-from awscli.testutils import mock, unittest, FileCreator, BaseAWSCommandParamsTest
+from awscli.testutils import unittest, FileCreator, BaseAWSCommandParamsTest
 from awscli.testutils import skip_if_windows
 import stat
 import tempfile
@@ -21,6 +21,7 @@ import socket
 
 from botocore.exceptions import ClientError
 from awscli.compat import six
+import mock
 
 from awscli.customizations.s3.filegenerator import FileGenerator, \
     FileDecodingError, FileStat, is_special_file, is_readable
@@ -121,7 +122,7 @@ class LocalFileGeneratorTest(unittest.TestCase):
         ref_list = [file_stat]
         self.assertEqual(len(result_list), len(ref_list))
         for i in range(len(result_list)):
-            compare_files(self, result_list[i], ref_list[i])
+            compare_files(result_list[i], ref_list[i])
 
     def test_local_directory(self):
         """
@@ -154,7 +155,7 @@ class LocalFileGeneratorTest(unittest.TestCase):
         ref_list = [file_stat2, file_stat]
         self.assertEqual(len(result_list), len(ref_list))
         for i in range(len(result_list)):
-            compare_files(self, result_list[i], ref_list[i])
+            compare_files(result_list[i], ref_list[i])
 
 
 @skip_if_windows('Symlink tests only supported on mac/linux')
@@ -511,7 +512,7 @@ class S3FileGeneratorTest(BaseAWSCommandParamsTest):
         ref_list = [file_stat]
         self.assertEqual(len(result_list), len(ref_list))
         for i in range(len(result_list)):
-            compare_files(self, result_list[i], ref_list[i])
+            compare_files(result_list[i], ref_list[i])
 
     def test_s3_single_file_404(self):
         """
@@ -542,7 +543,6 @@ class S3FileGeneratorTest(BaseAWSCommandParamsTest):
         result_list = list(file_gen.call(input_s3_file))
         self.assertEqual(len(result_list), 1)
         compare_files(
-            self,
             result_list[0],
             FileStat(src=self.file1, dest='text1.txt',
                      compare_key='text1.txt',
@@ -593,7 +593,7 @@ class S3FileGeneratorTest(BaseAWSCommandParamsTest):
         ref_list = [file_stat, file_stat2]
         self.assertEqual(len(result_list), len(ref_list))
         for i in range(len(result_list)):
-            compare_files(self, result_list[i], ref_list[i])
+            compare_files(result_list[i], ref_list[i])
 
     def test_s3_delete_directory(self):
         """
@@ -643,7 +643,7 @@ class S3FileGeneratorTest(BaseAWSCommandParamsTest):
         ref_list = [file_stat1, file_stat2, file_stat3]
         self.assertEqual(len(result_list), len(ref_list))
         for i in range(len(result_list)):
-            compare_files(self, result_list[i], ref_list[i])
+            compare_files(result_list[i], ref_list[i])
 
 
 if __name__ == "__main__":

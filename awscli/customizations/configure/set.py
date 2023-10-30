@@ -91,8 +91,7 @@ class ConfigureSetCommand(BasicCommand):
                 if len(parts) == 2:
                     value = {parts[1]: value}
             elif len(parts) == 2:
-                # Otherwise it's something like "set preview.service true"
-                # of something in the [plugin] section.
+                # Otherwise it's something in the [plugin] section
                 profile, varname = parts
         config_filename = self._get_config_file('config_file')
         if varname in self._WRITE_TO_CREDS_FILE:

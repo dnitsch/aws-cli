@@ -10,6 +10,7 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+from awscli.clidriver import AWSCLIEntryPoint
 from awscli.compat import ensure_text_type
 
 from tests.functional.history import BaseHistoryCommandParamsTest
@@ -20,6 +21,7 @@ class TestListCommand(BaseHistoryCommandParamsTest):
     def test_show_nothing_when_no_history_and_call_made(self):
         self.environ['AWS_CONFIG_FILE'] = ''
         self.driver = create_clidriver()
+        self.entry_point = AWSCLIEntryPoint(self.driver)
         self.parsed_responses = [
             {
                 "Regions": [
@@ -31,10 +33,10 @@ class TestListCommand(BaseHistoryCommandParamsTest):
             }
         ]
         self.run_cmd('ec2 describe-regions', expected_rc=0)
-        self.run_cmd('history show', expected_rc=0)
+        stdout, _, _ = self.run_cmd('history show', expected_rc=0)
         # The history show should not display anything as no history should
         # have been collected
-        self.assertEqual(b'', self.binary_stdout.getvalue())
+        self.assertEqual('', stdout)
 
     def test_show_nothing_when_no_history(self):
         out, err, rc = self.run_cmd('history list', expected_rc=255)
@@ -59,8 +61,8 @@ class TestListCommand(BaseHistoryCommandParamsTest):
         ]
         _, _, rc = self.run_cmd('ec2 describe-regions', expected_rc=0)
         self.history_recorder.record('CLI_RC', rc, 'CLI')
-        self.run_cmd('history list', expected_rc=0)
-        self.assertIn(b'ec2 describe-regions', self.binary_stdout.getvalue())
+        stdout, _, _ = self.run_cmd('history list', expected_rc=0)
+        self.assertIn('ec2 describe-regions', stdout)
 
     def test_multiple_calls_present(self):
         self.parsed_responses = [
@@ -82,8 +84,6 @@ class TestListCommand(BaseHistoryCommandParamsTest):
         self.history_recorder.record('CLI_RC', rc, 'CLI')
         _, _, rc = self.run_cmd('sts get-caller-identity', expected_rc=0)
         self.history_recorder.record('CLI_RC', rc, 'CLI')
-        self.run_cmd('history list', expected_rc=0)
-        self.assertIn(b'ec2 describe-regions',
-                      self.binary_stdout.getvalue())
-        self.assertIn(b'sts get-caller-identity',
-                      self.binary_stdout.getvalue())
+        stdout, _, _ = self.run_cmd('history list', expected_rc=0)
+        self.assertIn('ec2 describe-regions', stdout)
+        self.assertIn('sts get-caller-identity', stdout)

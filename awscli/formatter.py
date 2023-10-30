@@ -11,11 +11,12 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import logging
+from datetime import datetime
 
 from botocore.compat import json
-
 from botocore.utils import set_value_from_jmespath
 from botocore.paginate import PageIterator
+from ruamel.yaml import YAML
 
 from awscli.table import MultiTable, Styler, ColorizedStyler
 from awscli import text
@@ -34,12 +35,24 @@ class Formatter(object):
     def __init__(self, args):
         self._args = args
 
+    def _get_transformed_response_for_output(self, response):
+        # Performs various transformations to the API response ready to
+        # be outputted such as removing response id's and performing the
+        # query
+        self._remove_request_id(response)
+        return self._apply_query_if_needed(response)
+
     def _remove_request_id(self, response_data):
         if 'ResponseMetadata' in response_data:
             if 'RequestId' in response_data['ResponseMetadata']:
                 request_id = response_data['ResponseMetadata']['RequestId']
                 LOG.debug('RequestId: %s', request_id)
             del response_data['ResponseMetadata']
+
+    def _apply_query_if_needed(self, response_data):
+        if self._args.query is not None:
+            response_data = self._args.query.search(response_data)
+        return response_data
 
     def _get_default_stream(self):
         return compat.get_stdout_text_writer()
@@ -64,9 +77,8 @@ class FullyBufferedFormatter(Formatter):
             response_data = response.build_full_result()
         else:
             response_data = response
-        self._remove_request_id(response_data)
-        if self._args.query is not None:
-            response_data = self._args.query.search(response_data)
+        response_data = self._get_transformed_response_for_output(
+            response_data)
         try:
             self._format_response(command_name, response_data, stream)
         except IOError as e:
@@ -90,6 +102,90 @@ class JSONFormatter(FullyBufferedFormatter):
             json.dump(response, stream, indent=4, default=json_encoder,
                     ensure_ascii=False)
             stream.write('\n')
+
+
+class YAMLDumper(object):
+    def __init__(self):
+        self._yaml = YAML(typ='safe')
+        # Encoding is set to None because we handle the encoding by
+        # wrapping the stream, so there's no need for the yaml library
+        # to do it.
+        self._yaml.encoding = None
+        self._yaml.representer.default_flow_style = False
+
+    def dump(self, value, stream):
+        if self._is_json_scalar(value) or isinstance(value, datetime):
+            # YAML will attempt to disambiguate scalars by ending the stream
+            # with an elipsis. While this is technically valid YAML,
+            # it's not particularly useful. Unfortunately there's no
+            # universal way around this, so instead we just json dump the
+            # values. Also note that datetimes are explicitly not supported
+            # - the json dumper will complain if you pass them in. datetime
+            # values should respect the cli timestamp format, which is
+            # impossible to do from the Formatter.
+            json.dump(value, stream, ensure_ascii=False, default=json_encoder)
+            stream.write('\n')
+        else:
+            self._yaml.dump(value, stream)
+
+    def _is_json_scalar(self, value):
+        if value is None:
+            return True
+        return isinstance(value, (int, float, bool, compat.six.string_types))
+
+
+class YAMLFormatter(FullyBufferedFormatter):
+    def __init__(self, args, yaml_dumper=None):
+        super(YAMLFormatter, self).__init__(args)
+        self._yaml_dumper = yaml_dumper
+        if yaml_dumper is None:
+            self._yaml_dumper = YAMLDumper()
+
+    def _format_response(self, command_name, response, stream):
+        if response == {}:
+            return None
+        self._yaml_dumper.dump(response, stream)
+
+
+class StreamedYAMLFormatter(Formatter):
+    def __init__(self, args, yaml_dumper=None):
+        super(StreamedYAMLFormatter, self).__init__(args)
+        self._yaml_dumper = yaml_dumper
+        if yaml_dumper is None:
+            self._yaml_dumper = YAMLDumper()
+
+    def __call__(self, command_name, response, stream=None):
+        if stream is None:
+            stream = self._get_default_stream()
+        response_stream = self._get_response_stream(response)
+        for response in response_stream:
+            try:
+                # For YAML it is ambiguous as to whether the output from the
+                # stream is N responses in 1 list or N lists each with 1
+                # response. We go with the latter so we can reuse our YAML
+                # dumper
+                self._yaml_dumper.dump([response], stream)
+            except IOError:
+                # If the reading end of our stdout stream has closed the file
+                # we can just exit.
+                return
+            finally:
+                # flush is needed to avoid the "close failed in file object
+                # destructor" in python2.x. See:
+                # http://bugs.python.org/issue11380).
+                self._flush_stream(stream)
+
+    def _get_response_stream(self, response):
+        if is_response_paginated(response):
+            return compat.imap(
+                self._get_transformed_response_for_output, response)
+        else:
+            output = self._get_transformed_response_for_output(response)
+            if output == {}:
+                # The operation did not have an output so return an empty list
+                # as the stream so nothing gets printed out.
+                return []
+            return [output]
 
 
 class TableFormatter(FullyBufferedFormatter):
@@ -261,11 +357,17 @@ class TextFormatter(Formatter):
         text.format_text(response, stream)
 
 
+CLI_OUTPUT_FORMATS = {
+    'json': JSONFormatter,
+    'text': TextFormatter,
+    'table': TableFormatter,
+    'yaml': YAMLFormatter,
+    'yaml-stream': StreamedYAMLFormatter,
+}
+
+
 def get_formatter(format_type, args):
-    if format_type == 'json':
-        return JSONFormatter(args)
-    elif format_type == 'text':
-        return TextFormatter(args)
-    elif format_type == 'table':
-        return TableFormatter(args)
-    raise ValueError("Unknown output type: %s" % format_type)
+    if format_type not in CLI_OUTPUT_FORMATS:
+        raise ValueError("Unknown output type: %s" % format_type)
+    format_type_cls = CLI_OUTPUT_FORMATS[format_type]
+    return format_type_cls(args)

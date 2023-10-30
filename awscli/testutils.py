@@ -1,4 +1,4 @@
-# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You
 # may not use this file except in compliance with the License. A copy of
@@ -29,15 +29,25 @@ import logging
 import tempfile
 import platform
 import contextlib
-import string
 import binascii
+import math
 from pprint import pformat
 from subprocess import Popen, PIPE
-from unittest import mock
+import unittest
 
 from awscli.compat import StringIO
 
+from ruamel.yaml import YAML
 
+try:
+    import mock
+except ImportError as e:
+    # In the off chance something imports this module
+    # that's not suppose to, we should not stop the CLI
+    # by raising an ImportError.  Now if anything actually
+    # *uses* this module that isn't suppose to, that's a
+    # different story.
+    mock = None
 from awscli.compat import six
 from botocore.session import Session
 from botocore.exceptions import ClientError
@@ -48,18 +58,6 @@ from botocore.awsrequest import AWSResponse
 import awscli.clidriver
 from awscli.plugin import load_plugins
 from awscli.clidriver import CLIDriver
-from awscli import EnvironmentVariables
-
-
-import unittest
-
-
-# In python 3, order matters when calling assertEqual to
-# compare lists and dictionaries with lists. Therefore,
-# assertItemsEqual needs to be used but it is renamed to
-# assertCountEqual in python 3.
-if six.PY2:
-    unittest.TestCase.assertCountEqual = unittest.TestCase.assertItemsEqual
 
 
 _LOADER = botocore.loaders.Loader()
@@ -80,6 +78,21 @@ def skip_if_windows(reason):
     def decorator(func):
         return unittest.skipIf(
             platform.system() not in ['Darwin', 'Linux'], reason)(func)
+    return decorator
+
+
+def if_windows(reason):
+    """Decorator to skip tests should only be ran for windows.
+
+    Example usage:
+
+        @if_windows("Only supported on windows")
+        def test_some_windows_stuff(self):
+            self.assertEqual(...)
+
+    """
+    def decorator(func):
+        return unittest.skipIf(platform.system() != 'Windows', reason)(func)
     return decorator
 
 
@@ -173,6 +186,7 @@ def create_bucket(session, name=None, region=None):
             pass
         else:
             raise
+    client.delete_public_access_block(Bucket=bucket_name)
     return bucket_name
 
 
@@ -296,17 +310,26 @@ def capture_output():
             yield CapturedOutput(stdout, stderr)
 
 
+class BufferedBytesIO(six.BytesIO):
+    def buffer(self):
+        return self
+
+
 @contextlib.contextmanager
 def capture_input(input_bytes=b''):
-    input_data = six.BytesIO(input_bytes)
-    if six.PY3:
-        mock_object = mock.Mock()
-        mock_object.buffer = input_data
-    else:
-        mock_object = input_data
-
-    with mock.patch('sys.stdin', mock_object):
+    input_data = BufferedBytesIO(input_bytes)
+    with mock.patch('sys.stdin', input_data):
         yield input_data
+
+
+@contextlib.contextmanager
+def cd(path):
+    try:
+        original_dir = os.getcwd()
+        os.chdir(path)
+        yield
+    finally:
+        os.chdir(original_dir)
 
 
 class BaseAWSCommandParamsTest(unittest.TestCase):
@@ -333,12 +356,17 @@ class BaseAWSCommandParamsTest(unittest.TestCase):
         self.environ_patch = mock.patch('os.environ', self.environ)
         self.environ_patch.start()
         self.http_response = AWSResponse(None, 200, {}, None)
+        self.error_http_response = AWSResponse(None, 400, {}, None)
         self.parsed_response = {}
         self.make_request_patch = mock.patch('botocore.endpoint.Endpoint.make_request')
         self.make_request_is_patched = False
         self.operations_called = []
         self.parsed_responses = None
+        self.http_responses = None
         self.driver = create_clidriver()
+        self.entry_point = awscli.clidriver.AWSCLIEntryPoint(self.driver)
+        self.yaml = YAML(typ="safe", pure=True)
+        self.yaml.representer.default_flow_style = False
 
     def tearDown(self):
         # This clears all the previous registrations.
@@ -364,11 +392,19 @@ class BaseAWSCommandParamsTest(unittest.TestCase):
             self.make_request_is_patched = False
         make_request_patch = self.make_request_patch.start()
         if self.parsed_responses is not None:
-            make_request_patch.side_effect = lambda *args, **kwargs: \
-                (self.http_response, self.parsed_responses.pop(0))
+            make_request_patch.side_effect = self._request_patch_side_effect
         else:
             make_request_patch.return_value = (self.http_response, self.parsed_response)
         self.make_request_is_patched = True
+
+    def _request_patch_side_effect(self, *args, **kwargs):
+        http_response = self.http_response
+        if self.http_responses is not None:
+            http_response = self.http_responses.pop(0)
+        parsed_response = self.parsed_responses.pop(0)
+        if 'Error' in parsed_response and 'Code' in parsed_response['Error']:
+            http_response = self.error_http_response
+        return http_response, parsed_response
 
     def assert_params_for_cmd(self, cmd, params=None, expected_rc=0,
                               stderr_contains=None, ignore_params=None):
@@ -407,16 +443,8 @@ class BaseAWSCommandParamsTest(unittest.TestCase):
             cmdlist = cmd.split()
         else:
             cmdlist = cmd
-
         with capture_output() as captured:
-            try:
-                rc = self.driver.main(cmdlist)
-            except SystemExit as e:
-                # We need to catch SystemExit so that we
-                # can get a proper rc and still present the
-                # stdout/stderr to the test runner so we can
-                # figure out what went wrong.
-                rc = e.code
+            rc = self.entry_point.main(cmdlist)
         stderr = captured.stderr.getvalue()
         stdout = captured.stdout.getvalue()
         self.assertEqual(
@@ -425,18 +453,6 @@ class BaseAWSCommandParamsTest(unittest.TestCase):
             "stdout:\n%sstderr:\n%s" % (
                 expected_rc, rc, cmd, stdout, stderr))
         return stdout, stderr, rc
-
-
-class BaseAWSPreviewCommandParamsTest(BaseAWSCommandParamsTest):
-    def setUp(self):
-        self.preview_patch = mock.patch(
-            'awscli.customizations.preview.mark_as_preview')
-        self.preview_patch.start()
-        super(BaseAWSPreviewCommandParamsTest, self).setUp()
-
-    def tearDown(self):
-        self.preview_patch.stop()
-        super(BaseAWSPreviewCommandParamsTest, self).tearDown()
 
 
 class BaseCLIWireResponseTest(unittest.TestCase):
@@ -454,6 +470,8 @@ class BaseCLIWireResponseTest(unittest.TestCase):
         self.send_patch = mock.patch('botocore.endpoint.Endpoint._send')
         self.send_is_patched = False
         self.driver = create_clidriver()
+        self.entry_point = awscli.clidriver.AWSCLIEntryPoint(self.driver)
+
 
     def tearDown(self):
         self.environ_patch.stop()
@@ -478,7 +496,7 @@ class BaseCLIWireResponseTest(unittest.TestCase):
             cmdlist = cmd
         with capture_output() as captured:
             try:
-                rc = self.driver.main(cmdlist)
+                rc = self.entry_point.main(cmdlist)
             except SystemExit as e:
                 rc = e.code
         stderr = captured.stderr.getvalue()
@@ -491,7 +509,6 @@ class BaseCLIWireResponseTest(unittest.TestCase):
         return stdout, stderr, rc
 
 
-
 class FileCreator(object):
     def __init__(self):
         self.rootdir = tempfile.mkdtemp()
@@ -500,7 +517,8 @@ class FileCreator(object):
         if os.path.exists(self.rootdir):
             shutil.rmtree(self.rootdir)
 
-    def create_file(self, filename, contents, mtime=None, mode='w'):
+    def create_file(self, filename, contents, mtime=None, mode='w',
+                    encoding=None):
         """Creates a file in a tmpdir
 
         ``filename`` should be a relative path, e.g. "foo/bar/baz.txt"
@@ -519,7 +537,7 @@ class FileCreator(object):
         full_path = os.path.join(self.rootdir, filename)
         if not os.path.isdir(os.path.dirname(full_path)):
             os.makedirs(os.path.dirname(full_path))
-        with open(full_path, mode) as f:
+        with open(full_path, mode, encoding=encoding) as f:
             f.write(contents)
         current_time = os.path.getmtime(full_path)
         # Subtract a few years off the last modification date.
@@ -528,7 +546,15 @@ class FileCreator(object):
             os.utime(full_path, (mtime, mtime))
         return full_path
 
-    def append_file(self, filename, contents):
+    def create_file_with_size(self, filename, filesize):
+        filename = self.create_file(filename, contents='')
+        chunksize = 8192
+        with open(filename, 'wb') as f:
+            for i in range(int(math.ceil(filesize / float(chunksize)))):
+                f.write(b'a' * chunksize)
+        return filename
+
+    def append_file(self, filename, contents, encoding=None):
         """Append contents to a file
 
         ``filename`` should be a relative path, e.g. "foo/bar/baz.txt"
@@ -539,7 +565,7 @@ class FileCreator(object):
         full_path = os.path.join(self.rootdir, filename)
         if not os.path.isdir(os.path.dirname(full_path)):
             os.makedirs(os.path.dirname(full_path))
-        with open(full_path, 'a') as f:
+        with open(full_path, 'a', encoding=encoding) as f:
             f.write(contents)
         return full_path
 
@@ -693,7 +719,7 @@ def _get_memory_with_ps(pid):
     else:
         # Get the RSS from output that looks like this:
         # USER       PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND
-        # user     47102   0.0  0.1  2437000   4496 s002  S+    7:04PM   0:00.12 python2.6
+        # user     47102   0.0  0.1  2437000   4496 s002  S+    7:04PM   0:00.12 python2
         return int(stdout.splitlines()[1].split()[5]) * 1024
 
 
@@ -754,9 +780,7 @@ class BaseS3CLICommand(unittest.TestCase):
 
     def delete_public_access_block(self, bucket_name):
         client = self.create_client_for_bucket(bucket_name)
-        client.delete_public_access_block(
-             Bucket=bucket_name
-        )
+        client.delete_public_access_block(Bucket=bucket_name)
 
     def create_bucket(self, name=None, region=None):
         if not region:
@@ -768,6 +792,7 @@ class BaseS3CLICommand(unittest.TestCase):
         # Wait for the bucket to exist before letting it be used.
         self.wait_bucket_exists(bucket_name)
         self.delete_public_access_block(bucket_name)
+
         return bucket_name
 
     def put_object(self, bucket_name, key_name, contents='', extra_args=None):
@@ -922,11 +947,10 @@ class StringIOWithFileNo(StringIO):
         return 0
 
 
-class TestEventHandler(object):
+class EventCaptureHandler(object):
     def __init__(self, handler=None):
         self._handler = handler
         self._called = False
-        self.__test__ = False
 
     @property
     def called(self):

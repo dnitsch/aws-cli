@@ -9,10 +9,11 @@ from datetime import datetime
 from dateutil.tz import tzlocal, tzutc
 from dateutil.relativedelta import relativedelta
 
-from awscli.testutils import (
-    unittest, mock, skip_if_windows, FileCreator
-)
-from awscli.compat import urlparse, RawConfigParser
+from configparser import RawConfigParser
+from urllib.parse import urlsplit
+
+from awscli.testutils import unittest, mock, FileCreator, skip_if_windows
+from awscli.compat import urlparse
 from awscli.customizations.codeartifact.login import (
     BaseLogin, SwiftLogin, NuGetLogin, DotNetLogin, NpmLogin, PipLogin,
     TwineLogin, get_relative_expiration_time, CommandFailedError
@@ -73,8 +74,7 @@ class TestBaseLogin(unittest.TestCase):
             errno.ENOENT, 'not found error'
         )
         tool = 'NotSupported'
-        with self.assertRaisesRegex(
-                ValueError, '%s was not found.' % tool):
+        with self.assertRaisesRegex(ValueError, f'{tool} was not found.'):
             self.test_subject._run_commands(tool, ['echo', tool])
 
     def test_run_commands_unhandled_error(self):
@@ -600,7 +600,7 @@ Registered Sources:
         self.subprocess_utils.check_output.return_value = \
             self._NUGET_SOURCES_LIST_RESPONSE_BACKTRACKING
         signal.signal(
-            signal.SIGALRM, 
+            signal.SIGALRM,
             lambda signum, frame: handle_timeout(signum, frame, self.id()))
         signal.alarm(10)
         self.test_subject.login()
@@ -874,7 +874,7 @@ class TestNpmLogin(unittest.TestCase):
                 repository=self.repository
             )
 
-        repo_uri = urlparse.urlsplit(self.endpoint)
+        repo_uri = urlsplit(self.endpoint)
         always_auth_config = '//{}{}:always-auth'.format(
             repo_uri.netloc, repo_uri.path
         )
@@ -935,16 +935,15 @@ class TestNpmLogin(unittest.TestCase):
 
         for command in self.commands:
             expected_calls.append(mock.call(
-                    command,
-                    capture_output=True,
-                    check=True
-                )
-            )
+                command,
+                capture_output=True,
+                check=True
+            ))
         self.test_subject.login()
 
         self.subprocess_utils.run.assert_has_calls(
-                expected_calls, any_order=True
-            )
+            expected_calls, any_order=True
+        )
 
     def test_get_scope(self):
         expected_value = '@{}'.format(self.namespace)
@@ -980,7 +979,7 @@ class TestNpmLogin(unittest.TestCase):
 
     def test_login_dry_run(self):
         self.test_subject.login(dry_run=True)
-        self.subprocess_utils.check_call.assert_not_called()
+        self.subprocess_utils.assert_not_called()
 
 
 class TestPipLogin(unittest.TestCase):
@@ -1003,7 +1002,7 @@ class TestPipLogin(unittest.TestCase):
                 repository=self.repository
             )
 
-        repo_uri = urlparse.urlsplit(self.endpoint)
+        repo_uri = urlsplit(self.endpoint)
         self.pip_index_url = self.PIP_INDEX_URL_FMT.format(
             scheme=repo_uri.scheme,
             auth_token=self.auth_token,

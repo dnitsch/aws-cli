@@ -13,6 +13,7 @@
 import datetime
 
 from botocore.compat import urlsplit
+from awscli.clidriver import AWSCLIEntryPoint
 from awscli.testutils import BaseAWSCommandParamsTest, mock, temporary_file
 from awscli.testutils import create_clidriver
 
@@ -39,6 +40,7 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
         fileobj.flush()
         self.environ['AWS_CONFIG_FILE'] = fileobj.name
         self.driver = create_clidriver()
+        self.entry_point = AWSCLIEntryPoint(self.driver)
 
     def enable_sigv4_from_config_file(self, fileobj):
         fileobj.write(
@@ -49,6 +51,7 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
         fileobj.flush()
         self.environ['AWS_CONFIG_FILE'] = fileobj.name
         self.driver = create_clidriver()
+        self.entry_point = AWSCLIEntryPoint(self.driver)
 
     def assert_presigned_url_matches(self, actual_url, expected_match):
         """Verify generated presigned URL matches expected dict.
@@ -85,12 +88,19 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
 
         self.assert_presigned_url_matches(
             stdout, {
-                'hostname': 'bucket.s3.amazonaws.com',
+                'hostname': 'bucket.s3.us-east-1.amazonaws.com',
                 'path': '/key',
                 'query_params': {
-                    'AWSAccessKeyId': 'access_key',
-                    'Expires': str(FROZEN_TIMESTAMP + DEFAULT_EXPIRES),
-                    'Signature': '2m9M0eLB%2BqI0nUpkyTskKmHd0Ig%3D',
+                    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+                    'X-Amz-Credential': (
+                        'access_key%2F20160818%2Fus-east-1'
+                        '%2Fs3%2Faws4_request'),
+                    'X-Amz-Date': '20160818T143303Z',
+                    'X-Amz-Expires': '3600',
+                    'X-Amz-Signature': (
+                        '1297528058f2c8b89cfa52c6a47d6c54890700a1da2470'
+                        '2b06d53e774c0acc95'),
+                    'X-Amz-SignedHeaders': 'host',
                 }
             }
         )
@@ -101,12 +111,19 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
 
         self.assert_presigned_url_matches(
             stdout, {
-                'hostname': 's3.amazonaws.com',
+                'hostname': 's3.us-east-1.amazonaws.com',
                 'path': '/bucket.dots/key',
                 'query_params': {
-                    'AWSAccessKeyId': 'access_key',
-                    'Expires': str(FROZEN_TIMESTAMP + DEFAULT_EXPIRES),
-                    'Signature': '0IiC2vxub438EVcKfEFEMHuoHRw%3D',
+                    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+                    'X-Amz-Credential': (
+                        'access_key%2F20160818%2Fus-east-1'
+                        '%2Fs3%2Faws4_request'),
+                    'X-Amz-Date': '20160818T143303Z',
+                    'X-Amz-Expires': '3600',
+                    'X-Amz-Signature': (
+                        '5a032639cabfe3db0b4b87ba3b12c29f5e42fe74cbba8'
+                        'a0eb69bfb30c6e2d277'),
+                    'X-Amz-SignedHeaders': 'host',
                 }
             }
         )
@@ -118,12 +135,19 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
 
         self.assert_presigned_url_matches(
             stdout, {
-                'hostname': 'bucket.s3.amazonaws.com',
+                'hostname': 'bucket.s3.us-east-1.amazonaws.com',
                 'path': '/key',
                 'query_params': {
-                    'AWSAccessKeyId': 'access_key',
-                    'Expires': str(FROZEN_TIMESTAMP + expires_in),
-                    'Signature': 'WZEMcfBNlzfTZBq3bOvYef1cfoU%3D',
+                    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+                    'X-Amz-Credential': (
+                        'access_key%2F20160818%2Fus-east-1'
+                        '%2Fs3%2Faws4_request'),
+                    'X-Amz-Date': '20160818T143303Z',
+                    'X-Amz-Expires': '{}'.format(expires_in),
+                    'X-Amz-Signature': (
+                        '865fb61b021c3bf406c40d41353f584835fff1f158cf1b'
+                        '3e6ec06260ecbb8937'),
+                    'X-Amz-SignedHeaders': 'host',
                 }
             }
         )
@@ -135,7 +159,7 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
                 self.prefix + 's3://bucket/key')
 
         expected = {
-            'hostname': 'bucket.s3.amazonaws.com',
+            'hostname': 'bucket.s3.us-east-1.amazonaws.com',
             'path': '/key',
             'query_params': {
                 'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
@@ -145,8 +169,9 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
                 'X-Amz-Date': '20160818T143303Z',
                 'X-Amz-Expires': '3600',
                 'X-Amz-Signature': (
-                    'd28b6c4a54f31196a6d49335556736a3fc29f036018c8e'
-                    '50775887299092d1a0'),
+                    '1297528058f2c8b89cfa52c6a47d6c548907'
+                    '00a1da24702b06d53e774c0acc95'
+                ),
                 'X-Amz-SignedHeaders': 'host'
             }
         }
@@ -159,12 +184,19 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
 
         self.assert_presigned_url_matches(
             stdout, {
-                'hostname': 'bucket.s3.amazonaws.com',
+                'hostname': 'bucket.s3.us-east-1.amazonaws.com',
                 'path': '/key',
                 'query_params': {
-                    'AWSAccessKeyId': 'access_key',
-                    'Expires': str(FROZEN_TIMESTAMP + DEFAULT_EXPIRES),
-                    'Signature': '2m9M0eLB%2BqI0nUpkyTskKmHd0Ig%3D',
+                    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+                    'X-Amz-Credential': (
+                        'access_key%2F20160818%2Fus-east-1'
+                        '%2Fs3%2Faws4_request'),
+                    'X-Amz-Date': '20160818T143303Z',
+                    'X-Amz-Expires': '3600',
+                    'X-Amz-Signature': (
+                        '1297528058f2c8b89cfa52c6a47d6c54890700a1da2470'
+                        '2b06d53e774c0acc95'),
+                    'X-Amz-SignedHeaders': 'host',
                 }
             }
         )
@@ -176,12 +208,19 @@ class TestPresignCommand(BaseAWSCommandParamsTest):
                 self.prefix + 's3://bucket/key')
         self.assert_presigned_url_matches(
             stdout, {
-                'hostname': 's3.amazonaws.com',
+                'hostname': 's3.us-east-1.amazonaws.com',
                 'path': '/bucket/key',
                 'query_params': {
-                    'AWSAccessKeyId': 'access_key',
-                    'Expires': str(FROZEN_TIMESTAMP + DEFAULT_EXPIRES),
-                    'Signature': '2m9M0eLB%2BqI0nUpkyTskKmHd0Ig%3D',
+                    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+                    'X-Amz-Credential': (
+                        'access_key%2F20160818%2Fus-east-1'
+                        '%2Fs3%2Faws4_request'),
+                    'X-Amz-Date': '20160818T143303Z',
+                    'X-Amz-Expires': '3600',
+                    'X-Amz-Signature': (
+                        'c6dab3560db76aded03e6268338ddb0a6dec00ebc82d6e'
+                        '7abdc305529fcaba74'),
+                    'X-Amz-SignedHeaders': 'host',
                 }
             }
         )

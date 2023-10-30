@@ -1,4 +1,5 @@
 import logging
+import copy
 import os
 
 from botocore import model
@@ -6,14 +7,15 @@ from botocore.compat import OrderedDict
 from botocore.validate import validate_parameters
 
 import awscli
-from awscli.argparser import ArgTableArgParser
+from awscli.argparser import ArgTableArgParser, SubCommandArgParser
 from awscli.argprocess import unpack_argument, unpack_cli_arg
 from awscli.arguments import CustomArgument, create_argument_model_from_schema
 from awscli.clidocs import OperationDocumentEventHandler
-from awscli.clidriver import CLICommand
+from awscli.commands import CLICommand
 from awscli.bcdoc import docevents
 from awscli.help import HelpCommand
 from awscli.schema import SchemaTransformer
+from awscli.customizations.exceptions import ParamValidationError
 
 LOG = logging.getLogger(__name__)
 _open = open
@@ -125,6 +127,12 @@ class BasicCommand(CLICommand):
         self._subcommand_table = None
         self._lineage = [self]
 
+    def _parse_potential_subcommand(self, args, subcommand_table):
+        if subcommand_table:
+            parser = SubCommandArgParser(self.arg_table, subcommand_table)
+            return parser.parse_known_args(args)
+        return None
+
     def __call__(self, args, parsed_globals):
         # args is the remaining unparsed args.
         # We might be able to parse these args so we need to create
@@ -134,7 +142,14 @@ class BasicCommand(CLICommand):
         event = 'before-building-argument-table-parser.%s' % \
             ".".join(self.lineage_names)
         self._session.emit(event, argument_table=self._arg_table, args=args,
-                           session=self._session, parsed_globals=parsed_globals)
+                           session=self._session)
+        maybe_parsed_subcommand = self._parse_potential_subcommand(
+            args, self._subcommand_table
+        )
+        if maybe_parsed_subcommand is not None:
+            new_args, subcommand_name = maybe_parsed_subcommand
+            return self._subcommand_table[subcommand_name](
+                new_args, parsed_globals)
         parser = ArgTableArgParser(self.arg_table, self.subcommand_table)
         parsed_args, remaining = parser.parse_known_args(args)
 
@@ -176,18 +191,22 @@ class BasicCommand(CLICommand):
                     cli_argument.argument_model, value)
 
             setattr(parsed_args, key, value)
-
+        if hasattr(self._session, 'user_agent_extra'):
+            self._add_customization_to_user_agent()
         if hasattr(parsed_args, 'help'):
             self._display_help(parsed_args, parsed_globals)
         elif getattr(parsed_args, 'subcommand', None) is None:
             # No subcommand was specified so call the main
             # function for this top level command.
             if remaining:
-                raise ValueError("Unknown options: %s" % ','.join(remaining))
-            return self._run_main(parsed_args, parsed_globals)
-        else:
-            return self.subcommand_table[parsed_args.subcommand](remaining,
-                                                                 parsed_globals)
+                raise ParamValidationError(
+                    "Unknown options: %s" % ','.join(remaining)
+                )
+            rc = self._run_main(parsed_args, parsed_globals)
+            if rc is None:
+                return 0
+            else:
+                return rc
 
     def _validate_value_against_schema(self, model, value):
         validate_parameters(value, model)
@@ -215,7 +234,8 @@ class BasicCommand(CLICommand):
             subcommand_name = subcommand['name']
             subcommand_class = subcommand['command_class']
             subcommand_table[subcommand_name] = subcommand_class(self._session)
-        self._session.emit('building-command-table.%s' % self.NAME,
+        name = '_'.join([c.name for c in self.lineage])
+        self._session.emit('building-command-table.%s' % name,
                            command_table=subcommand_table,
                            session=self._session,
                            command_object=self)
@@ -246,7 +266,8 @@ class BasicCommand(CLICommand):
 
     def _build_arg_table(self):
         arg_table = OrderedDict()
-        self._session.emit('building-arg-table.%s' % self.NAME,
+        name = '_'.join([c.name for c in self.lineage])
+        self._session.emit('building-arg-table.%s' % name,
                            arg_table=self.ARG_TABLE)
         for arg_data in self.ARG_TABLE:
 
@@ -293,6 +314,22 @@ class BasicCommand(CLICommand):
     @lineage.setter
     def lineage(self, value):
         self._lineage = value
+
+    def _raise_usage_error(self):
+        lineage = ' '.join([c.name for c in self.lineage])
+        error_msg = (
+            "usage: aws [options] %s <subcommand> "
+            "[parameters]\naws: error: too few arguments"
+        ) % lineage
+        raise ParamValidationError(error_msg)
+
+    def _add_customization_to_user_agent(self):
+        if ' command/' in self._session.user_agent_extra:
+            self._session.user_agent_extra += '.%s' % self.lineage_names[-1]
+        else:
+            self._session.user_agent_extra += ' command/%s' % '.'.join(
+                self.lineage_names
+            )
 
 
 class BasicHelp(HelpCommand):

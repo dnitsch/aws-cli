@@ -15,12 +15,174 @@ import signal
 import datetime
 import contextlib
 import os
+import re
 import sys
-import subprocess
+from subprocess import Popen, PIPE
+import logging
 
 from awscli.compat import six
-from awscli.compat import get_binary_stdout
+from awscli.compat import get_stdout_text_writer
 from awscli.compat import get_popen_kwargs_for_pager_cmd
+from awscli.compat import StringIO
+from botocore.utils import resolve_imds_endpoint_mode
+from botocore.utils import IMDSFetcher
+from botocore.configprovider import BaseProvider
+
+logger = logging.getLogger(__name__)
+
+
+class PagerInitializationException(Exception):
+    pass
+
+
+class LazyStdin:
+    def __init__(self, process):
+        self._process = process
+        self._stream = None
+
+    def __getattr__(self, item):
+        if self._stream is None:
+            self._stream = self._process.initialize().stdin
+        return getattr(self._stream, item)
+
+    def flush(self):
+        # if stream has not been created yet there is no reason to create it
+        # just to call `flush`
+        if self._stream is not None:
+            return self._stream.flush()
+
+
+class LazyPager:
+    # Spin up a new process only in case it has been called or its stdin
+    # has been called
+    def __init__(self, popen, **kwargs):
+        self._popen = popen
+        self._popen_kwargs = kwargs
+        self._process = None
+        self.stdin = LazyStdin(self)
+
+    def initialize(self):
+        if self._process is None:
+            self._process = self._do_popen()
+        return self._process
+
+    def __getattr__(self, item):
+        return getattr(self.initialize(), item)
+
+    def communicate(self, *args, **kwargs):
+        # if pager process has not been created yet it means we didn't
+        # write to its stdin and there is no reason to create it just
+        # to call `communicate` so we can ignore this call
+        if self._process is not None or args or kwargs:
+            return getattr(self.initialize(), 'communicate')(*args, **kwargs)
+        return None, None
+
+    def _do_popen(self):
+        try:
+            return self._popen(**self._popen_kwargs)
+        except FileNotFoundError as e:
+            raise PagerInitializationException(e)
+
+
+class IMDSRegionProvider(BaseProvider):
+    def __init__(self, session, environ=None, fetcher=None):
+        """Initialize IMDSRegionProvider.
+
+        :type session: :class:`botocore.session.Session`
+        :param session: The session is needed to look up configuration for
+            how to contact the instance metadata service. Specifically the
+            whether or not it should use the IMDS region at all, and if so how
+            to configure the timeout and number of attempts to reach the
+            service.
+
+        :type environ: None or dict
+        :param environ: A dictionary of environment variables to use. If
+            ``None`` is the argument then ``os.environ`` will be used by
+            default.
+
+        :type fecther: :class:`botocore.utils.InstanceMetadataRegionFetcher`
+        :param fetcher: The class to actually handle the fetching of the region
+            from the IMDS. If not provided a default one will be created.
+        """
+        self._session = session
+        if environ is None:
+            environ = os.environ
+        self._environ = environ
+        self._fetcher = fetcher
+
+    def provide(self):
+        """Provide the region value from IMDS."""
+        instance_region = self._get_instance_metadata_region()
+        return instance_region
+
+    def _get_instance_metadata_region(self):
+        fetcher = self._get_fetcher()
+        region = fetcher.retrieve_region()
+        return region
+
+    def _get_fetcher(self):
+        if self._fetcher is None:
+            self._fetcher = self._create_fetcher()
+        return self._fetcher
+
+    def _create_fetcher(self):
+        metadata_timeout = self._session.get_config_variable(
+            'metadata_service_timeout')
+        metadata_num_attempts = self._session.get_config_variable(
+            'metadata_service_num_attempts')
+        imds_config = {
+            'ec2_metadata_service_endpoint': self._session.get_config_variable(
+                'ec2_metadata_service_endpoint'),
+            'ec2_metadata_service_endpoint_mode': resolve_imds_endpoint_mode(
+                self._session
+            )
+        }
+        fetcher = InstanceMetadataRegionFetcher(
+            timeout=metadata_timeout,
+            num_attempts=metadata_num_attempts,
+            env=self._environ,
+            user_agent=self._session.user_agent(truncate=True),
+            config=imds_config,
+        )
+        return fetcher
+
+
+class InstanceMetadataRegionFetcher(IMDSFetcher):
+    _URL_PATH = 'latest/meta-data/placement/availability-zone/'
+
+    def retrieve_region(self):
+        """Get the current region from the instance metadata service.
+
+        :rvalue: str
+        :returns: The region the current instance is running in or None
+            if the instance metadata service cannot be contacted or does not
+            give a valid response.
+
+        :rtype: None or str
+        :returns: Returns the region as a string if it is configured to use
+            IMDS as a region source. Otherwise returns ``None``. It will also
+            return ``None`` if it fails to get the region from IMDS due to
+            exhausting its retries or not being able to connect.
+        """
+        try:
+            region = self._get_region()
+            return region
+        except self._RETRIES_EXCEEDED_ERROR_CLS:
+            logger.debug("Max number of attempts exceeded (%s) when "
+                         "attempting to retrieve data from metadata service.",
+                         self._num_attempts)
+        return None
+
+    def _get_region(self):
+        token = self._fetch_metadata_token()
+        response = self._get_request(
+            url_path=self._URL_PATH,
+            retry_func=self._default_retry,
+            token=token
+        )
+        availability_zone = response.text
+        region = availability_zone[:-1]
+        return region
 
 
 def split_on_commas(value):
@@ -34,6 +196,11 @@ def split_on_commas(value):
         # If there's quotes for the values, we have to handle this
         # ourselves.
         return _split_with_quotes(value)
+
+
+def strip_html_tags(text):
+    clean = re.compile('<.*?>')
+    return re.sub(clean, '', text)
 
 
 def _split_with_quotes(value):
@@ -205,17 +372,38 @@ def is_a_tty():
         return False
 
 
+def is_stdin_a_tty():
+    try:
+        return os.isatty(sys.stdin.fileno())
+    except Exception as e:
+        return False
+
+
 class OutputStreamFactory(object):
-    def __init__(self, popen=None):
+    def __init__(self, session, popen=None, environ=None,
+                 default_less_flags='FRX'):
+        self._session = session
         self._popen = popen
         if popen is None:
-            self._popen = subprocess.Popen
+            self._popen = Popen
+        self._environ = environ
+        if environ is None:
+            self._environ = os.environ.copy()
+        self._default_less_flags = default_less_flags
+
+    def get_output_stream(self):
+        pager = self._get_configured_pager()
+        if is_a_tty() and pager:
+            return self.get_pager_stream(pager)
+        return self.get_stdout_stream()
 
     @contextlib.contextmanager
     def get_pager_stream(self, preferred_pager=None):
+        if not preferred_pager:
+            preferred_pager = self._get_configured_pager()
         popen_kwargs = self._get_process_pager_kwargs(preferred_pager)
+        process = LazyPager(self._popen, **popen_kwargs)
         try:
-            process = self._popen(**popen_kwargs)
             yield process.stdin
         except IOError:
             # Ignore IOError since this can commonly be raised when a pager
@@ -226,11 +414,21 @@ class OutputStreamFactory(object):
 
     @contextlib.contextmanager
     def get_stdout_stream(self):
-        yield get_binary_stdout()
+        yield get_stdout_text_writer()
+
+    def _get_configured_pager(self):
+        return self._session.get_component('config_store').get_config_variable(
+            'pager'
+        )
 
     def _get_process_pager_kwargs(self, pager_cmd):
         kwargs = get_popen_kwargs_for_pager_cmd(pager_cmd)
-        kwargs['stdin'] = subprocess.PIPE
+        kwargs['stdin'] = PIPE
+        env = self._environ.copy()
+        if 'LESS' not in env:
+            env['LESS'] = self._default_less_flags
+        kwargs['env'] = env
+        kwargs['universal_newlines'] = True
         return kwargs
 
 
@@ -238,6 +436,46 @@ def write_exception(ex, outfile):
     outfile.write("\n")
     outfile.write(six.text_type(ex))
     outfile.write("\n")
+
+
+@contextlib.contextmanager
+def original_ld_library_path(env=None):
+    # See: https://pyinstaller.readthedocs.io/en/stable/runtime-information.html
+    # When running under pyinstaller, it will set an
+    # LD_LIBRARY_PATH to ensure it prefers its bundled version of libs.
+    # There are times where we don't want this behavior, for example when
+    # running a separate subprocess.
+    if env is None:
+        env = os.environ
+
+    value_to_put_back = env.get('LD_LIBRARY_PATH')
+    # The first case is where a user has exported an LD_LIBRARY_PATH
+    # in their env.  This will be mapped to LD_LIBRARY_PATH_ORIG.
+    if 'LD_LIBRARY_PATH_ORIG' in env:
+        env['LD_LIBRARY_PATH'] = env['LD_LIBRARY_PATH_ORIG']
+    else:
+        # Otherwise if they didn't set an LD_LIBRARY_PATH we just need
+        # to make sure this value is unset.
+        env.pop('LD_LIBRARY_PATH', None)
+    try:
+        yield
+    finally:
+        if value_to_put_back is not None:
+            env['LD_LIBRARY_PATH'] = value_to_put_back
+
+
+def dump_yaml_to_str(yaml, data):
+    """Dump a Python object to a YAML-formatted string.
+
+    :type yaml: ruamel.yaml.YAML
+    :param yaml: An instance of ruamel.yaml.YAML.
+
+    :type data: object
+    :param data: A Python object that can be dumped to YAML.
+    """
+    stream = StringIO()
+    yaml.dump(data, stream)
+    return stream.getvalue()
 
 
 class ShapeWalker(object):

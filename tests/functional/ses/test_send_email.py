@@ -15,6 +15,7 @@ from awscli.testutils import BaseAWSCommandParamsTest
 
 from awscli.compat import six
 from six.moves import cStringIO
+import mock
 
 
 class TestSendEmail(BaseAWSCommandParamsTest):
@@ -129,7 +130,7 @@ class TestSendEmail(BaseAWSCommandParamsTest):
                 ' --destination {"ToAddresses":["fie@baz.com"]}'
                 ' --to fie2@baz.com')
         args_list = (self.prefix + args).split()
-        self.run_cmd(args_list, expected_rc=255)
+        self.run_cmd(args_list, expected_rc=252)
 
     def test_both_message_and_text(self):
         args = (' --message {"Subject":{"Data":"This_is_a_test"},'
@@ -138,4 +139,4 @@ class TestSendEmail(BaseAWSCommandParamsTest):
                 ' --destination {"ToAddresses":["fie@baz.com"]}'
                 ' --text This_is_another_body')
         args_list = (self.prefix + args).split()
-        self.run_cmd(args_list, expected_rc=255)
+        self.run_cmd(args_list, expected_rc=252)

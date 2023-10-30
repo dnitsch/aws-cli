@@ -10,7 +10,8 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-from awscli.testutils import mock
+import mock
+
 from awscli.testutils import create_bucket
 from awscli.testutils import BaseCLIDriverTest
 
@@ -32,5 +33,6 @@ class TestCreateBucket(BaseCLIDriverTest):
                         <RequestId>0123456789ABCDEF</RequestId>
                         <HostId>foo</HostId>
                         </Error>'''),
+                mock.Mock(status_code=200, headers={}, content=b''),
                 ]
             self.assertEqual(create_bucket(self.session, 'bucket'), 'bucket')
